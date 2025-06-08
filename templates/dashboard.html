@@ -7,58 +7,68 @@
         height: 100%;
         width: 100%;
     }
+    .watchlist-item {
+        /* transition: background-color 0.2s ease-in-out; */ /* Optional: for smoother hover */
+    }
     .watchlist-item:hover {
-        background-color: #2d3748; /* Slightly Lighter Dark Gray for hover (gray-800) */
+        background-color: #374151; /* gray-700 for hover, slightly lighter than panel bg */
     }
     .active-symbol {
-        background-color: #2c5282; /* Dark Blue for active (blue-800) */
-        border-left: 3px solid #63b3ed; /* Lighter Blue for border (blue-400) */
+        background-color: #3b82f6; /* blue-500 for active */
+    }
+    .active-symbol .symbol-name,
+    .active-symbol .symbol-ltp,
+    .active-symbol .symbol-description, /* Added .symbol-description here */
+    .active-symbol .symbol-change,
+    .active-symbol .symbol-percentage-change {
+        color: #ffffff; /* White text for active symbol */
+    }
+
+    .text-positive {
+        color: #22c55e; /* green-500 */
+    }
+    .text-negative {
+        color: #ef4444; /* red-500 */
     }
     /* Custom scrollbar for webkit browsers */
     .custom-scrollbar::-webkit-scrollbar {
-        width: 8px;
+        width: 6px;
     }
     .custom-scrollbar::-webkit-scrollbar-track {
-        background: #2d3748; /* gray-800 */
+        background: #1f2937; /* gray-800 */
     }
     .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: #4a5568; /* gray-600 */
-        border-radius: 4px;
+        background: #4b5563; /* gray-600 */
+        border-radius: 3px;
     }
     .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: #718096; /* gray-500 */
+        background: #6b7280; /* gray-500 */
     }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="flex flex-col h-[calc(100vh-100px)] bg-gray-900 text-gray-200 p-4 gap-4"> {# Main background: gray-900, Text: gray-200, Adjusted height #}
-    <!-- Top Bar: Dashboard Title -->
+<div class="flex flex-col h-[calc(100vh-100px)] bg-gray-900 text-gray-300 p-4 gap-4">
     <div class="flex-none">
         <h1 class="text-2xl font-semibold text-gray-100">Trading Dashboard</h1>
     </div>
-
-    <!-- Main Content: Watchlist and Chart -->
     <div class="flex flex-grow gap-4 overflow-hidden">
-        <!-- Left Panel: Watchlist -->
-        <div class="w-1/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4"> {# Panel BG: gray-800 #}
-            <h3 class="text-lg font-semibold text-gray-100 mb-3">Market Watch</h3>
-            <div class="mb-3">
-                <input type="text" id="symbolSearch" class="w-full p-2 border border-gray-600 bg-gray-700 text-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="Search (e.g., INFY)">
+        <div class="w-1/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-3">
+            <h3 class="text-lg font-semibold text-gray-100 mb-2 px-1">Market Watch</h3>
+            <div class="mb-3 px-1">
+                <input type="text" id="symbolSearch" class="w-full p-2 border border-gray-600 bg-gray-700 text-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder="Search NSE Equities...">
                 <div id="searchResults" class="mt-1 bg-gray-700 border border-gray-600 rounded-md shadow-lg hidden max-h-60 overflow-y-auto z-10 custom-scrollbar">
-                    {# Search results will appear here #}
                 </div>
             </div>
-            <div class="flex-grow overflow-y-auto custom-scrollbar pr-1">
-                <h4 class="text-md font-semibold text-gray-300 mb-2">Watchlist</h4>
-                <div id="watchlist" class="space-y-2">
-                    <p class="text-gray-400 text-sm">No symbols added yet.</p>
+            <div class="flex-grow overflow-y-auto custom-scrollbar">
+                <div id="watchlist" class="space-y-1">
+                    <p class="text-gray-500 text-sm px-1">No symbols added yet.</p>
                 </div>
             </div>
         </div>
 
         <!-- Right Panel: Chart -->
-        <div class="w-3/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4"> {# Panel BG: gray-800 #}
+        <div class="w-3/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4">
             <div class="flex-none flex justify-between items-center mb-3">
                 <h3 id="chartSymbol" class="text-lg font-semibold text-gray-100">Live Chart</h3>
                 <span id="chartStatus" class="text-sm text-gray-400"></span>
@@ -100,6 +110,8 @@ document.addEventListener('DOMContentLoaded', function() {
     socket.on('dashboard_chart_data', (data) => {
         if (data && data.instrument_token && watchlist[data.instrument_token]) {
             const symbolInfo = watchlist[data.instrument_token];
+            symbolInfo.lastTick = data; // Store the whole tick
+
             if (symbolInfo.chartSeries && data.last_price) {
                 const candle = {
                     time: Math.floor(data.timestamp ? new Date(data.timestamp).getTime() / 1000 : new Date().getTime() / 1000),
@@ -109,9 +121,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     close: data.last_price
                 };
                 symbolInfo.chartSeries.update(candle);
-                symbolInfo.lastTick = data;
-                updateWatchlistItemDisplay(data.instrument_token);
             }
+            updateWatchlistItemDisplay(data.instrument_token);
         }
     });
 
@@ -135,7 +146,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else if (data.length > 0) {
                     data.forEach(item => {
                         const resultItem = document.createElement('div');
-                        resultItem.className = 'p-2 hover:bg-gray-600 cursor-pointer border-b border-gray-500 text-gray-200';
+                        resultItem.className = 'p-2 hover:bg-gray-600 cursor-pointer border-b border-gray-500 text-gray-200 text-sm';
                         resultItem.textContent = `${item.symbol} - ${item.description || ''}`;
                         resultItem.addEventListener('click', function() {
                             addSymbolToWatchlist(item);
@@ -145,54 +156,65 @@ document.addEventListener('DOMContentLoaded', function() {
                         searchResultsDiv.appendChild(resultItem);
                     });
                 } else {
-                    searchResultsDiv.innerHTML = '<div class="p-2 text-gray-400">No results found</div>';
+                    searchResultsDiv.innerHTML = '<div class="p-2 text-gray-400 text-sm">No results found</div>';
                 }
                 searchResultsDiv.classList.remove('hidden');
             })
             .catch(error => {
                 console.error('Error searching symbols:', error);
-                searchResultsDiv.innerHTML = '<div class="p-2 text-red-400">Error during search.</div>';
+                searchResultsDiv.innerHTML = '<div class="p-2 text-red-400 text-sm">Error during search.</div>';
                 searchResultsDiv.classList.remove('hidden');
             });
     });
 
     function addSymbolToWatchlist(item) {
         if (watchlist[item.instrument_token]) return;
-        watchlist[item.instrument_token] = { symbolData: item, chartSeries: null, lastTick: null };
+        watchlist[item.instrument_token] = {
+            symbolData: item,
+            chartSeries: null,
+            lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 } // Initialize lastTick with all expected fields
+        };
         renderWatchlist();
         if (!activeInstrumentToken) {
             loadChartForSymbol(item.instrument_token);
         }
-        socket.emit('connect_dashboard_ws', { instrument_tokens: [item.instrument_token] });
+        const tokensToSubscribe = Object.keys(watchlist);
+        if (tokensToSubscribe.length > 0) {
+             socket.emit('connect_dashboard_ws', { instrument_tokens: tokensToSubscribe });
+        }
     }
 
     function removeSymbolFromWatchlist(instrumentToken) {
         if (!watchlist[instrumentToken]) return;
-        socket.emit('connect_dashboard_ws', { instrument_tokens_to_unsubscribe: [instrumentToken] });
+
+        const oldTokens = Object.keys(watchlist);
+
         const series = watchlist[instrumentToken].chartSeries;
         if (series && lightweightChart) {
             lightweightChart.removeSeries(series);
         }
         delete watchlist[instrumentToken];
         renderWatchlist();
+
+        const newTokens = Object.keys(watchlist);
+        if (newTokens.length > 0) {
+            socket.emit('connect_dashboard_ws', { instrument_tokens: newTokens });
+        } else if (oldTokens.length > 0 && newTokens.length === 0) {
+            socket.emit('connect_dashboard_ws', { instrument_tokens_to_unsubscribe: oldTokens });
+        }
+
         if (activeInstrumentToken === instrumentToken) {
             activeInstrumentToken = null;
             chartSymbolHeader.textContent = 'Live Chart';
-            chartPlaceholder.classList.remove('hidden');
-            // Clear the specific series, chart object remains
-            // If you want to fully clear chart, you might need to remove and recreate chart object or all its series.
+            if (lightweightChart) {
+                 chartContainer.innerHTML = '';
+                 lightweightChart = null;
+                 chartContainer.appendChild(chartPlaceholder); // Re-add placeholder explicitly
+            }
+            chartPlaceholder.classList.remove('hidden'); // Ensure placeholder is visible
             const remainingTokens = Object.keys(watchlist);
             if (remainingTokens.length > 0) {
                 loadChartForSymbol(remainingTokens[0]);
-            } else if (lightweightChart) {
-                 // No symbols left, clear chart by removing all series
-                Object.values(watchlist).forEach(entry => { // This watchlist is now empty, but if it had series...
-                    if (entry.chartSeries) lightweightChart.removeSeries(entry.chartSeries);
-                });
-                 chartContainer.innerHTML = ''; // Clear previous chart DOM if needed before showing placeholder
-                 lightweightChart = null; // Destroy chart instance
-                 chartContainer.appendChild(chartPlaceholder); // Re-add placeholder
-                 chartPlaceholder.classList.remove('hidden');
             }
         }
     }
@@ -201,59 +223,113 @@ document.addEventListener('DOMContentLoaded', function() {
         watchlistDiv.innerHTML = '';
         const tokens = Object.keys(watchlist);
         if (tokens.length === 0) {
-            watchlistDiv.innerHTML = '<p class="text-gray-400 text-sm">No symbols added yet.</p>';
+            watchlistDiv.innerHTML = '<p class="text-gray-500 text-sm px-1">No symbols added yet.</p>';
             return;
         }
+
         tokens.forEach(token => {
-            const item = watchlist[token].symbolData;
-            const lastTick = watchlist[token].lastTick;
+            const itemData = watchlist[token].symbolData;
+            const lastTick = watchlist[token].lastTick || {};
+            const ltp = lastTick.last_price !== undefined ? lastTick.last_price.toFixed(2) : '-';
+            const change = lastTick.change !== undefined ? lastTick.change.toFixed(2) : '0.00';
+            const percentageChange = lastTick.percentage_change !== undefined ? lastTick.percentage_change.toFixed(2) : '0.00';
+
+            let changeClass = 'text-gray-400';
+            if (parseFloat(change) > 0) changeClass = 'text-positive';
+            if (parseFloat(change) < 0) changeClass = 'text-negative';
+
             const symbolItemDiv = document.createElement('div');
-            symbolItemDiv.className = `watchlist-item p-2.5 border border-gray-700 rounded-md cursor-pointer flex justify-between items-center ${token === activeInstrumentToken ? 'active-symbol' : 'bg-gray-800'}`;
+            symbolItemDiv.className = `watchlist-item p-2 rounded-md cursor-pointer flex flex-col ${token === activeInstrumentToken ? 'active-symbol' : 'bg-gray-800'}`;
             symbolItemDiv.setAttribute('data-token', token);
             symbolItemDiv.addEventListener('click', () => loadChartForSymbol(token));
-            const infoDiv = document.createElement('div');
-            infoDiv.className = 'flex-grow';
+
+            // Top Row: Symbol and LTP
+            const topRow = document.createElement('div');
+            topRow.className = 'flex justify-between items-center w-full';
+
             const symbolName = document.createElement('span');
-            symbolName.className = 'font-medium text-gray-100';
-            symbolName.textContent = item.symbol;
-            infoDiv.appendChild(symbolName);
-            if (lastTick && lastTick.last_price !== undefined) {
-                const priceSpan = document.createElement('span');
-                let priceClass = 'text-gray-400';
-                if (lastTick.change && lastTick.change > 0) priceClass = 'text-green-400';
-                if (lastTick.change && lastTick.change < 0) priceClass = 'text-red-400';
-                priceSpan.className = `block text-xs ${priceClass}`;
-                priceSpan.textContent = `LTP: ${lastTick.last_price.toFixed(2)}`;
-                infoDiv.appendChild(priceSpan);
-            }
+            symbolName.className = 'symbol-name font-semibold text-sm text-gray-100 truncate'; // Added truncate
+            symbolName.textContent = itemData.symbol;
+            topRow.appendChild(symbolName);
+
+            const ltpSpan = document.createElement('span');
+            ltpSpan.className = `symbol-ltp text-sm font-medium ${token === activeInstrumentToken ? 'text-white' : 'text-gray-200'}`;
+            ltpSpan.textContent = ltp;
+            topRow.appendChild(ltpSpan);
+            symbolItemDiv.appendChild(topRow);
+
+            // Middle Row: Description (Company Name) and Change Details
+            const descriptionRow = document.createElement('div');
+            descriptionRow.className = 'flex justify-between items-center w-full mt-0.5'; // Made it a flex container
+
+            const descriptionSpan = document.createElement('span');
+            descriptionSpan.className = `symbol-description text-xs ${token === activeInstrumentToken ? 'text-white' : 'text-gray-400'} truncate`; // Removed block, truncate will work with flex
+            descriptionSpan.textContent = itemData.description || 'N/A';
+            descriptionSpan.style.maxWidth = '60%'; // Limit width of description to allow space for change details
+            descriptionRow.appendChild(descriptionSpan);
+
+            // Container for Change and Percentage Change (to group them on the right)
+            const changeDetailsContainer = document.createElement('div');
+            changeDetailsContainer.className = 'flex items-baseline'; // Use items-baseline for better alignment if font sizes differ
+
+            const changeSpan = document.createElement('span');
+            changeSpan.className = `symbol-change text-xs ${changeClass}`;
+            changeSpan.textContent = change;
+            changeDetailsContainer.appendChild(changeSpan);
+
+            const percentageChangeSpan = document.createElement('span');
+            percentageChangeSpan.className = `symbol-percentage-change text-xs ${changeClass} ml-1`; // Added ml-1 for spacing
+            percentageChangeSpan.textContent = `(${percentageChange}%)`;
+            changeDetailsContainer.appendChild(percentageChangeSpan);
+
+            descriptionRow.appendChild(changeDetailsContainer); // Add grouped change details to the right
+            symbolItemDiv.appendChild(descriptionRow);
+
             const removeBtn = document.createElement('button');
-            removeBtn.className = 'ml-2 text-red-400 hover:text-red-300 text-sm font-semibold';
             removeBtn.innerHTML = '&times;';
+            removeBtn.className = 'absolute top-1 right-1 text-gray-500 hover:text-red-400 text-xs px-1';
+            removeBtn.style.lineHeight = '1';
             removeBtn.addEventListener('click', (event) => {
                 event.stopPropagation();
                 removeSymbolFromWatchlist(token);
             });
-            symbolItemDiv.appendChild(infoDiv);
+            symbolItemDiv.style.position = 'relative';
             symbolItemDiv.appendChild(removeBtn);
+
             watchlistDiv.appendChild(symbolItemDiv);
         });
     }
 
     function updateWatchlistItemDisplay(instrumentToken) {
         const itemDiv = watchlistDiv.querySelector(`[data-token="${instrumentToken}"]`);
-        if (itemDiv && watchlist[instrumentToken] && watchlist[instrumentToken].lastTick) {
-            const lastTick = watchlist[instrumentToken].lastTick;
-            let priceSpan = itemDiv.querySelector('.text-xs');
-            if (!priceSpan) {
-                priceSpan = document.createElement('span');
-                priceSpan.className = 'block text-xs';
-                itemDiv.firstChild.appendChild(priceSpan);
-            }
-            let priceClass = 'text-gray-400';
-            if (lastTick.change && lastTick.change > 0) priceClass = 'text-green-400';
-            if (lastTick.change && lastTick.change < 0) priceClass = 'text-red-400';
-            priceSpan.className = `block text-xs ${priceClass}`;
-            priceSpan.textContent = `LTP: ${lastTick.last_price.toFixed(2)}`;
+        if (!itemDiv || !watchlist[instrumentToken] || !watchlist[instrumentToken].lastTick) return;
+
+        const lastTick = watchlist[instrumentToken].lastTick;
+        const ltp = lastTick.last_price !== undefined ? lastTick.last_price.toFixed(2) : '-';
+        const change = lastTick.change !== undefined ? lastTick.change.toFixed(2) : '0.00';
+        const percentageChange = lastTick.percentage_change !== undefined ? lastTick.percentage_change.toFixed(2) : '0.00';
+
+        const ltpSpan = itemDiv.querySelector('.symbol-ltp');
+        if (ltpSpan) ltpSpan.textContent = ltp;
+
+        const changeSpan = itemDiv.querySelector('.symbol-change');
+        const percentageChangeSpan = itemDiv.querySelector('.symbol-percentage-change');
+
+        let changeClass = 'text-gray-400';
+        if (parseFloat(change) > 0) changeClass = 'text-positive';
+        if (parseFloat(change) < 0) changeClass = 'text-negative';
+
+        if (changeSpan) {
+            changeSpan.textContent = change;
+            changeSpan.className = `symbol-change text-xs ${changeClass}`;
+        }
+        if (percentageChangeSpan) {
+            percentageChangeSpan.textContent = `(${percentageChange}%)`;
+            percentageChangeSpan.className = `symbol-percentage-change text-xs ${changeClass}`;
+        }
+        // Update active symbol text color if necessary
+        if (instrumentToken === activeInstrumentToken) {
+            if(ltpSpan) ltpSpan.classList.add('text-white');
         }
     }
 
@@ -261,48 +337,62 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!watchlist[instrumentToken]) return;
         activeInstrumentToken = instrumentToken;
         const symbolData = watchlist[instrumentToken].symbolData;
-        chartSymbolHeader.textContent = `${symbolData.symbol} (${symbolData.description || ''})`;
+        chartSymbolHeader.textContent = `${symbolData.symbol} (${symbolData.description || 'N/A'})`;
         chartPlaceholder.classList.add('hidden');
 
-        if (lightweightChart) { // If chart exists, remove all series before adding new one
+        if (lightweightChart) {
             Object.values(watchlist).forEach(entry => {
-                if (entry.chartSeries) {
+                if (entry.chartSeries && entry.symbolData.instrument_token !== activeInstrumentToken) {
                     try { lightweightChart.removeSeries(entry.chartSeries); } catch (e) { /* ignore */ }
                     entry.chartSeries = null;
                 }
             });
-        } else { // Create chart if it doesn't exist
+        } else {
             chartContainer.innerHTML = '';
             lightweightChart = LightweightCharts.createChart(chartContainer, {
                 width: chartContainer.clientWidth,
                 height: chartContainer.clientHeight,
                 layout: {
-                    backgroundColor: '#1a202c', // gray-900
-                    textColor: '#e2e8f0', // gray-200
+                    backgroundColor: '#1f2937',
+                    textColor: '#d1d5db',
                 },
                 grid: {
-                    vertLines: { color: '#2d3748' }, // gray-800
-                    horzLines: { color: '#2d3748' }, // gray-800
+                    vertLines: { color: '#374151' },
+                    horzLines: { color: '#374151' },
                 },
                 crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                 timeScale: {
-                    borderColor: '#4a5568', // gray-600
+                    borderColor: '#4b5563',
                     timeVisible: true,
-                    secondsVisible: false, // Usually not needed for daily/intraday candles
+                    secondsVisible: false,
+                },
+                priceScale: {
+                    borderColor: '#4b5563',
                 },
             });
         }
 
-        const newSeries = lightweightChart.addCandlestickSeries({
-            upColor: '#2f855a', // Green-600
-            downColor: '#c53030', // Red-600
-            borderDownColor: '#c53030',
-            borderUpColor: '#2f855a',
-            wickDownColor: '#c53030',
-            wickUpColor: '#2f855a',
+        Object.keys(watchlist).forEach(token => {
+            if (token !== activeInstrumentToken && watchlist[token].chartSeries) {
+                try { lightweightChart.removeSeries(watchlist[token].chartSeries); } catch (e) { /* ignore */ }
+                watchlist[token].chartSeries = null;
+            }
         });
-        watchlist[instrumentToken].chartSeries = newSeries;
+
+        if (!watchlist[activeInstrumentToken].chartSeries) {
+            const newSeries = lightweightChart.addCandlestickSeries({
+                upColor: '#10b981',
+                downColor: '#f43f5e',
+                borderDownColor: '#f43f5e',
+                borderUpColor: '#10b981',
+                wickDownColor: '#f43f5e',
+                wickUpColor: '#10b981',
+            });
+            watchlist[activeInstrumentToken].chartSeries = newSeries;
+        }
+
         renderWatchlist();
+
         const tokensToSubscribe = Object.keys(watchlist);
         if (tokensToSubscribe.length > 0) {
              socket.emit('connect_dashboard_ws', { instrument_tokens: tokensToSubscribe });
