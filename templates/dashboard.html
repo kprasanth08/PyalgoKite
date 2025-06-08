@@ -1,492 +1,324 @@
-{% extends "layout.html" %}
-
-{% block title %}Dashboard - PyAlgo{% endblock %}
+{% extends 'layout.html' %}
 
 {% block extra_head %}
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <style>
-        body {
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-            background-color: #f0f2f5; /* Light gray background */
-        }
-        .main-content {
-            display: flex;
-            flex-grow: 1;
-            padding-top: 60px; /* Adjust if navbar height changes */
-        }
-        .left-panel {
-            width: 30%;
-            min-width: 250px; /* Minimum width for watchlist */
-            padding: 20px;
-            background-color: #fff; /* White background for watchlist panel */
-            border-right: 1px solid #e0e0e0; /* Subtle border */
-            overflow-y: auto; /* Scroll if content overflows */
-        }
-        .right-panel {
-            width: 70%;
-            padding: 20px;
-            background-color: #fff; /* White background for chart panel */
-        }
-        .watchlist-item {
-            padding: 10px;
-            border-bottom: 1px solid #eee;
-            cursor: pointer;
-            transition: background-color 0.3s ease;
-        }
-        .watchlist-item:hover, .watchlist-item.active {
-            background-color: #e6f7ff; /* Light blue highlight on hover/active */
-        }
-        .chart-container-wrapper {
-            position: relative;
-            height: 70vh; /* Adjust height as needed */
-            background-color: #ffffff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        #liveDashboardChart {
-            width: 100%;
-            height: 100%;
-        }
-        .header-bar {
-            background-color: #001529; /* Dark blue for header */
-            color: white;
-            padding: 1rem;
-            text-align: center;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            z-index: 1000;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .header-bar a {
-            color: white;
-            margin: 0 15px;
-            text-decoration: none;
-        }
-        .header-bar a:hover {
-            text-decoration: underline;
-        }
-        .user-welcome {
-            font-size: 1.1rem;
-        }
-        .order-updates-panel {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f9f9f9;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            height: 300px; /* Or adjust as needed */
-            overflow-y: auto;
-        }
-        .order-update-item {
-            padding: 8px;
-            border-bottom: 1px solid #eee;
-            font-size: 0.9em;
-            white-space: pre-wrap; /* To respect formatting in the message */
-            word-break: break-all;
-        }
-        .order-update-item:last-child {
-            border-bottom: none;
-        }
-        .symbol-search-results-container {
-            max-height: 200px; /* Adjust as needed */
-            overflow-y: auto;
-            border: 1px solid #eee;
-            border-radius: 4px;
-        }
-        .search-result-item {
-            padding: 8px 10px;
-            cursor: pointer;
-            border-bottom: 1px solid #f0f0f0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .search-result-item:last-child {
-            border-bottom: none;
-        }
-        .search-result-item:hover {
-            background-color: #f0f8ff; /* Light blue hover */
-        }
-        .search-result-item .stock-info {
-            display: flex;
-            flex-direction: column;
-        }
-        .search-result-item .stock-name {
-            font-size: 0.85em;
-            color: #555;
-        }
-        .search-result-item .stock-symbol {
-            font-size: 0.95em;
-            font-weight: 500;
-            color: #333;
-        }
-        .search-result-item .stock-ltp {
-            font-size: 0.9em;
-            font-weight: bold;
-            color: #26a69a; /* Green for LTP, adjust as needed */
-        }
-        .search-result-item .stock-ltp.negative {
-            color: #ef5350; /* Red for negative change, if you implement that */
-        }
-    </style>
+<style>
+    /* Ensure chart takes full height of its container */
+    #chartContainer, #chart {
+        height: 100%;
+        width: 100%;
+    }
+    .watchlist-item:hover {
+        background-color: #2d3748; /* Slightly Lighter Dark Gray for hover (gray-800) */
+    }
+    .active-symbol {
+        background-color: #2c5282; /* Dark Blue for active (blue-800) */
+        border-left: 3px solid #63b3ed; /* Lighter Blue for border (blue-400) */
+    }
+    /* Custom scrollbar for webkit browsers */
+    .custom-scrollbar::-webkit-scrollbar {
+        width: 8px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+        background: #2d3748; /* gray-800 */
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #4a5568; /* gray-600 */
+        border-radius: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #718096; /* gray-500 */
+    }
+</style>
 {% endblock %}
 
 {% block content %}
-<div class="main-content w-full">
-    <!-- Left Panel: Watchlist -->
-    <div class="left-panel">
-        <h3 class="text-xl font-semibold mb-4 text-gray-700">Watchlist</h3>
-        <div id="watchlist-container">
-            <!-- Watchlist items will be dynamically added here -->
-            <div class="watchlist-item" data-symbol="NSE:SBIN-EQ">NSE:SBIN-EQ</div>
-            <div class="watchlist-item" data-symbol="NSE:RELIANCE-EQ">NSE:RELIANCE-EQ</div>
-            <div class="watchlist-item" data-symbol="NSE:NIFTYBANK-INDEX">NSE:NIFTYBANK-INDEX</div>
-            <!-- Add more static items or a form to add symbols -->
-        </div>
-        <div class="mt-4">
-            <input type="text" id="newSymbolInput" placeholder="e.g., NSE:INFY-EQ" class="w-full p-2 border rounded mb-2">
-            <button id="addSymbolBtn" class="w-full bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded">
-                Add to Watchlist
-            </button>
-        </div>
-        <div id="symbolSearchResults" class="mt-2 symbol-search-results-container">
-            <!-- Search results will appear here -->
-        </div>
-
-        <!-- Order Updates Panel -->
-        <h3 class="text-xl font-semibold mt-6 mb-4 text-gray-700">Order Updates</h3>
-        <div id="order-updates-container" class="order-updates-panel">
-            <!-- Order updates will be dynamically added here -->
-            <div class="order-update-item">Listening for order updates...</div>
-        </div>
+<div class="flex flex-col h-[calc(100vh-100px)] bg-gray-900 text-gray-200 p-4 gap-4"> {# Main background: gray-900, Text: gray-200, Adjusted height #}
+    <!-- Top Bar: Dashboard Title -->
+    <div class="flex-none">
+        <h1 class="text-2xl font-semibold text-gray-100">Trading Dashboard</h1>
     </div>
 
-    <!-- Right Panel: Live Chart -->
-    <div class="right-panel">
-        <h3 class="text-xl font-semibold mb-4 text-gray-700" id="chart-title">Live Chart</h3>
-        <div class="chart-container-wrapper">
-            <canvas id="liveDashboardChart"></canvas>
+    <!-- Main Content: Watchlist and Chart -->
+    <div class="flex flex-grow gap-4 overflow-hidden">
+        <!-- Left Panel: Watchlist -->
+        <div class="w-1/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4"> {# Panel BG: gray-800 #}
+            <h3 class="text-lg font-semibold text-gray-100 mb-3">Market Watch</h3>
+            <div class="mb-3">
+                <input type="text" id="symbolSearch" class="w-full p-2 border border-gray-600 bg-gray-700 text-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="Search (e.g., INFY)">
+                <div id="searchResults" class="mt-1 bg-gray-700 border border-gray-600 rounded-md shadow-lg hidden max-h-60 overflow-y-auto z-10 custom-scrollbar">
+                    {# Search results will appear here #}
+                </div>
+            </div>
+            <div class="flex-grow overflow-y-auto custom-scrollbar pr-1">
+                <h4 class="text-md font-semibold text-gray-300 mb-2">Watchlist</h4>
+                <div id="watchlist" class="space-y-2">
+                    <p class="text-gray-400 text-sm">No symbols added yet.</p>
+                </div>
+            </div>
         </div>
-        <div id="socket-status" class="mt-2 text-sm text-gray-500">Connecting to WebSocket...</div>
+
+        <!-- Right Panel: Chart -->
+        <div class="w-3/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4"> {# Panel BG: gray-800 #}
+            <div class="flex-none flex justify-between items-center mb-3">
+                <h3 id="chartSymbol" class="text-lg font-semibold text-gray-100">Live Chart</h3>
+                <span id="chartStatus" class="text-sm text-gray-400"></span>
+            </div>
+            <div id="chartContainer" class="flex-grow relative">
+                <p id="chartPlaceholder" class="absolute inset-0 flex items-center justify-center text-gray-500">Select a symbol from the watchlist to view its chart.</p>
+            </div>
+        </div>
     </div>
 </div>
 
 <script>
-    document.addEventListener('DOMContentLoaded', function () {
-        const watchlistItems = document.querySelectorAll('.watchlist-item');
-        const chartTitle = document.getElementById('chart-title');
-        const socketStatus = document.getElementById('socket-status');
-        let currentSelectedSymbol = null;
-        let chartInstance = null;
+document.addEventListener('DOMContentLoaded', function() {
+    const socket = io({ transports: ['websocket'] });
+    const symbolSearchInput = document.getElementById('symbolSearch');
+    const searchResultsDiv = document.getElementById('searchResults');
+    const watchlistDiv = document.getElementById('watchlist');
+    const chartContainer = document.getElementById('chartContainer');
+    const chartSymbolHeader = document.getElementById('chartSymbol');
+    const chartStatusSpan = document.getElementById('chartStatus');
+    const chartPlaceholder = document.getElementById('chartPlaceholder');
 
-        const socket = io(); // Connect to Socket.IO server
+    let watchlist = {};
+    let lightweightChart = null;
+    let activeInstrumentToken = null;
 
-        function initializeChart() {
-            const ctx = document.getElementById('liveDashboardChart').getContext('2d');
-            chartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [], // Timestamps
-                    datasets: [{
-                        label: 'LTP', // Last Traded Price
-                        data: [],   // Prices
-                        borderColor: 'rgba(54, 162, 235, 1)',
-                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
-                        borderWidth: 1.5,
-                        fill: true,
-                        tension: 0.1
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'second',
-                                displayFormats: { second: 'HH:mm:ss' }
-                            },
-                            title: { display: true, text: 'Time' }
-                        },
-                        y: {
-                            title: { display: true, text: 'Price' },
-                            beginAtZero: false
-                        }
-                    },
-                    animation: {
-                        duration: 0 // Disable animation for smoother live updates
-                    }
-                }
-            });
-        }
-
-        function updateChart(timestamp, price) {
-            if (!chartInstance) return;
-
-            const maxDataPoints = 60; // Show last 60 data points (e.g., 1 minute if 1-second interval)
-            chartInstance.data.labels.push(timestamp);
-            chartInstance.data.datasets[0].data.push(price);
-
-            if (chartInstance.data.labels.length > maxDataPoints) {
-                chartInstance.data.labels.shift();
-                chartInstance.data.datasets[0].data.shift();
-            }
-            chartInstance.update('none'); // 'none' for no animation
-        }
-
-        function selectSymbol(symbolElement) {
-            if (currentSelectedSymbol === symbolElement.dataset.symbol) return; // Already selected
-
-            // Reset previous active item
-            document.querySelectorAll('.watchlist-item.active').forEach(el => el.classList.remove('active'));
-
-            // Set new active item
-            symbolElement.classList.add('active');
-            currentSelectedSymbol = symbolElement.dataset.symbol;
-            chartTitle.textContent = `Live Chart: ${currentSelectedSymbol}`;
-
-            // Clear previous chart data
-            if (chartInstance) {
-                chartInstance.data.labels = [];
-                chartInstance.data.datasets[0].data = [];
-                chartInstance.update();
-            }
-
-            // Request WebSocket connection for this symbol
-            socket.emit('connect_dashboard_ws', { symbols: [currentSelectedSymbol] });
-            socketStatus.textContent = `Subscribing to ${currentSelectedSymbol}...`;
-        }
-
-        watchlistItems.forEach(item => {
-            item.addEventListener('click', function () {
-                selectSymbol(this);
-            });
-        });
-
-        // Handle incoming WebSocket data for the dashboard chart
-        socket.on('dashboard_chart_data', function (msg) {
-            console.log('Raw dashboard_chart_data received:', msg); // Log the raw message
-
-            if (msg && msg.error) {
-                socketStatus.textContent = `Error: ${msg.error}`;
-                console.error("WebSocket Error:", msg.error);
-                return; // Stop processing if it's an error message
-            }
-            if (msg && msg.status) {
-                socketStatus.textContent = `Status: ${msg.status}`;
-                console.log("WebSocket Status:", msg.status);
-                // If it's ONLY a status message (e.g., {'status': 'Subscribed...'}), don't try to process it as chart data.
-                // Check if the message object only contains the 'status' key.
-                const keys = Object.keys(msg);
-                if (keys.length === 1 && keys[0] === 'status') {
-                    return;
-                }
-            }
-
-            // At this point, msg should ideally be the actual data from Fyers
-            // Fyers symbolData is typically an array of objects, or a single object if customized by the library.
-            // The original code `const updates = Array.isArray(msg) ? msg : [msg];` is good.
-            const updates = Array.isArray(msg) ? msg : [msg];
-
-            updates.forEach(update => {
-                // Ensure 'update' is a valid object and has the necessary properties
-                if (typeof update === 'object' && update !== null && update.symbol === currentSelectedSymbol && update.ltp !== undefined) {
-                    const timestamp = update.timestamp ? new Date(update.timestamp * 1000) : new Date(); // Fyers timestamp is epoch seconds
-                    updateChart(timestamp, update.ltp);
-                } else {
-                    // Log details if an item in 'updates' is not processed for the chart
-                    if (typeof update === 'object' && update !== null) {
-                        console.log('Skipping chart data processing for update item. Reason:',
-                                    update.symbol !== currentSelectedSymbol ? 'Symbol mismatch' : 'LTP undefined',
-                                    ' | Received update:', update,
-                                    ' | Expected symbol:', currentSelectedSymbol);
-                    } else if (msg !== updates) {
-                        // This case handles if msg was not an array and became `[msg]`, and that original msg was not a suitable object.
-                        console.log('Skipping chart data processing for non-object msg that was wrapped in an array. Original msg:', msg);
-                    } else {
-                        // This handles cases where 'update' itself is not an object (e.g. if 'updates' array contains non-objects)
-                        console.log('Skipping chart data processing for non-object item in updates array. Item:', update);
-                    }
-                }
-            });
-        });
-
-        // Add new symbol to watchlist
-        const addSymbolBtn = document.getElementById('addSymbolBtn');
-        const newSymbolInput = document.getElementById('newSymbolInput');
-        const watchlistContainer = document.getElementById('watchlist-container');
-        const symbolSearchResultsContainer = document.getElementById('symbolSearchResults');
-        let searchTimeout = null;
-
-        // Function to fetch and display symbol search results
-        function fetchSymbolSearchResults(query) {
-            if (query.length < 2) { // Minimum characters to trigger search
-                symbolSearchResultsContainer.innerHTML = ''; // Clear results if query is too short
-                return;
-            }
-            // Fetch from the new backend endpoint
-            fetch(`/search-nse-symbols?query=${encodeURIComponent(query)}`)
-                .then(response => response.json())
-                .then(data => {
-                    symbolSearchResultsContainer.innerHTML = ''; // Clear previous results
-                    if (data.error) {
-                        console.error('Search error:', data.error);
-                        const errorItem = document.createElement('div');
-                        errorItem.classList.add('search-result-item');
-                        errorItem.textContent = data.error;
-                        errorItem.style.color = 'red';
-                        symbolSearchResultsContainer.appendChild(errorItem);
-                        return;
-                    }
-                    if (data.length === 0) {
-                        const noResultsItem = document.createElement('div');
-                        noResultsItem.classList.add('search-result-item');
-                        noResultsItem.textContent = 'No symbols found.';
-                        symbolSearchResultsContainer.appendChild(noResultsItem);
-                        return;
-                    }
-                    data.forEach(stock => {
-                        const item = document.createElement('div');
-                        item.classList.add('search-result-item');
-                        item.dataset.symbol = stock.symbol; // Store symbol for adding to watchlist
-
-                        const stockInfo = document.createElement('div');
-                        stockInfo.classList.add('stock-info');
-
-                        const stockSymbol = document.createElement('span');
-                        stockSymbol.classList.add('stock-symbol');
-                        stockSymbol.textContent = stock.symbol;
-
-                        const stockName = document.createElement('span');
-                        stockName.classList.add('stock-name');
-                        stockName.textContent = stock.description; // Assuming 'description' is the stock name
-
-                        stockInfo.appendChild(stockSymbol);
-                        stockInfo.appendChild(stockName);
-
-                        // Placeholder for LTP - you'll need another mechanism to fetch/display this
-                        const stockLtp = document.createElement('span');
-                        stockLtp.classList.add('stock-ltp');
-                        stockLtp.textContent = '--'; // LTP will be updated via WebSocket or separate API call
-
-                        item.appendChild(stockInfo);
-                        item.appendChild(stockLtp);
-
-                        item.addEventListener('click', function() {
-                            addSymbolToWatchlist(stock.symbol);
-                            newSymbolInput.value = ''; // Clear input
-                            symbolSearchResultsContainer.innerHTML = ''; // Clear search results
-                        });
-                        symbolSearchResultsContainer.appendChild(item);
-                    });
-                })
-                .catch(error => {
-                    console.error('Error fetching symbol search results:', error);
-                    symbolSearchResultsContainer.innerHTML = '<div class="search-result-item" style="color:red;">Search request failed.</div>';
-                });
-        }
-
-        // Event listener for the symbol input field
-        newSymbolInput.addEventListener('keyup', function() {
-            clearTimeout(searchTimeout);
-            const query = newSymbolInput.value.trim();
-            if (query) {
-                searchTimeout = setTimeout(() => {
-                    fetchSymbolSearchResults(query);
-                }, 300); // Debounce: wait 300ms after user stops typing
-            } else {
-                symbolSearchResultsContainer.innerHTML = ''; // Clear results if input is empty
-            }
-        });
-
-        // Modified function to add symbol to watchlist (can be called from search results)
-        function addSymbolToWatchlist(symbol) {
-            if (symbol && !document.querySelector(`.watchlist-item[data-symbol="${symbol}"]`)) {
-                const newItem = document.createElement('div');
-                newItem.classList.add('watchlist-item');
-                newItem.dataset.symbol = symbol;
-                newItem.textContent = symbol;
-                newItem.addEventListener('click', function() {
-                    selectSymbol(this);
-                });
-                watchlistContainer.appendChild(newItem);
-                // Optionally, select the newly added symbol
-                // selectSymbol(newItem);
-            } else if (!symbol){
-                alert('Invalid symbol.');
-            } else {
-                alert('Symbol already in watchlist.');
-            }
-        }
-
-        addSymbolBtn.addEventListener('click', function() {
-            const newSymbol = newSymbolInput.value.trim().toUpperCase();
-            addSymbolToWatchlist(newSymbol);
-            newSymbolInput.value = ''; // Clear input after explicit add button click
-            symbolSearchResultsContainer.innerHTML = ''; // Clear search results
-        });
-
-        // Initialize chart and select the first symbol by default if watchlist is not empty
-        initializeChart();
-        if (watchlistItems.length > 0) {
-            selectSymbol(watchlistItems[0]);
-        }
-
-        // --- Order Update Logic ---
-        const orderUpdatesContainer = document.getElementById('order-updates-container');
-
-        // Request connection to order updates WebSocket when dashboard loads
-        socket.emit('connect_order_updates');
-        console.log("Attempting to connect to order updates WebSocket...");
-
-        socket.on('fyers_order_update', function(data) {
-            console.log('Received fyers_order_update:', data);
-            const item = document.createElement('div');
-            item.classList.add('order-update-item');
-
-            let content = '';
-            if (typeof data === 'object' && data !== null) {
-                if(data.error){
-                    content = `Error: ${data.error}`;
-                    item.style.color = 'red';
-                } else if (data.status){
-                    content = `Status: ${data.status}`;
-                    item.style.color = 'blue';
-                } else {
-                    // Attempt to pretty print JSON if it's an actual order update object
-                    try {
-                        content = JSON.stringify(data, null, 2);
-                    } catch (e) {
-                        content = String(data); // Fallback for non-JSON or complex objects
-                    }
-                }
-            } else {
-                content = String(data); // Fallback for primitive types
-            }
-            item.textContent = content;
-
-            // Prepend new updates to the top
-            if (orderUpdatesContainer.firstChild && orderUpdatesContainer.firstChild.textContent === 'Listening for order updates...'){
-                orderUpdatesContainer.innerHTML = ''; // Clear initial message
-            }
-            orderUpdatesContainer.prepend(item);
-
-            // Optional: Limit the number of displayed order updates
-            const maxOrderUpdates = 50;
-            while (orderUpdatesContainer.children.length > maxOrderUpdates) {
-                orderUpdatesContainer.removeChild(orderUpdatesContainer.lastChild);
-            }
-        });
-
+    socket.on('connect', () => {
+        console.log('Socket.IO connected');
+        chartStatusSpan.textContent = 'Connected';
+        chartStatusSpan.className = 'text-sm text-green-400';
     });
+
+    socket.on('disconnect', () => {
+        console.log('Socket.IO disconnected');
+        chartStatusSpan.textContent = 'Disconnected';
+        chartStatusSpan.className = 'text-sm text-red-400';
+    });
+
+    socket.on('dashboard_chart_data', (data) => {
+        if (data && data.instrument_token && watchlist[data.instrument_token]) {
+            const symbolInfo = watchlist[data.instrument_token];
+            if (symbolInfo.chartSeries && data.last_price) {
+                const candle = {
+                    time: Math.floor(data.timestamp ? new Date(data.timestamp).getTime() / 1000 : new Date().getTime() / 1000),
+                    open: data.ohlc && data.ohlc.open !== undefined ? data.ohlc.open : data.last_price,
+                    high: data.ohlc && data.ohlc.high !== undefined ? data.ohlc.high : data.last_price,
+                    low: data.ohlc && data.ohlc.low !== undefined ? data.ohlc.low : data.last_price,
+                    close: data.last_price
+                };
+                symbolInfo.chartSeries.update(candle);
+                symbolInfo.lastTick = data;
+                updateWatchlistItemDisplay(data.instrument_token);
+            }
+        }
+    });
+
+    socket.on('kite_order_update', (order) => {
+        console.log('Order Update (from dashboard):', order);
+    });
+
+    symbolSearchInput.addEventListener('input', function() {
+        const query = this.value.trim();
+        if (query.length < 2) {
+            searchResultsDiv.innerHTML = '';
+            searchResultsDiv.classList.add('hidden');
+            return;
+        }
+        fetch(`${window.location.origin}/search-nse-symbols?query=${encodeURIComponent(query)}`)
+            .then(response => response.json())
+            .then(data => {
+                searchResultsDiv.innerHTML = '';
+                if (data.error) {
+                    searchResultsDiv.innerHTML = `<div class="p-2 text-red-400">${data.error}</div>`;
+                } else if (data.length > 0) {
+                    data.forEach(item => {
+                        const resultItem = document.createElement('div');
+                        resultItem.className = 'p-2 hover:bg-gray-600 cursor-pointer border-b border-gray-500 text-gray-200';
+                        resultItem.textContent = `${item.symbol} - ${item.description || ''}`;
+                        resultItem.addEventListener('click', function() {
+                            addSymbolToWatchlist(item);
+                            symbolSearchInput.value = '';
+                            searchResultsDiv.classList.add('hidden');
+                        });
+                        searchResultsDiv.appendChild(resultItem);
+                    });
+                } else {
+                    searchResultsDiv.innerHTML = '<div class="p-2 text-gray-400">No results found</div>';
+                }
+                searchResultsDiv.classList.remove('hidden');
+            })
+            .catch(error => {
+                console.error('Error searching symbols:', error);
+                searchResultsDiv.innerHTML = '<div class="p-2 text-red-400">Error during search.</div>';
+                searchResultsDiv.classList.remove('hidden');
+            });
+    });
+
+    function addSymbolToWatchlist(item) {
+        if (watchlist[item.instrument_token]) return;
+        watchlist[item.instrument_token] = { symbolData: item, chartSeries: null, lastTick: null };
+        renderWatchlist();
+        if (!activeInstrumentToken) {
+            loadChartForSymbol(item.instrument_token);
+        }
+        socket.emit('connect_dashboard_ws', { instrument_tokens: [item.instrument_token] });
+    }
+
+    function removeSymbolFromWatchlist(instrumentToken) {
+        if (!watchlist[instrumentToken]) return;
+        socket.emit('connect_dashboard_ws', { instrument_tokens_to_unsubscribe: [instrumentToken] });
+        const series = watchlist[instrumentToken].chartSeries;
+        if (series && lightweightChart) {
+            lightweightChart.removeSeries(series);
+        }
+        delete watchlist[instrumentToken];
+        renderWatchlist();
+        if (activeInstrumentToken === instrumentToken) {
+            activeInstrumentToken = null;
+            chartSymbolHeader.textContent = 'Live Chart';
+            chartPlaceholder.classList.remove('hidden');
+            // Clear the specific series, chart object remains
+            // If you want to fully clear chart, you might need to remove and recreate chart object or all its series.
+            const remainingTokens = Object.keys(watchlist);
+            if (remainingTokens.length > 0) {
+                loadChartForSymbol(remainingTokens[0]);
+            } else if (lightweightChart) {
+                 // No symbols left, clear chart by removing all series
+                Object.values(watchlist).forEach(entry => { // This watchlist is now empty, but if it had series...
+                    if (entry.chartSeries) lightweightChart.removeSeries(entry.chartSeries);
+                });
+                 chartContainer.innerHTML = ''; // Clear previous chart DOM if needed before showing placeholder
+                 lightweightChart = null; // Destroy chart instance
+                 chartContainer.appendChild(chartPlaceholder); // Re-add placeholder
+                 chartPlaceholder.classList.remove('hidden');
+            }
+        }
+    }
+
+    function renderWatchlist() {
+        watchlistDiv.innerHTML = '';
+        const tokens = Object.keys(watchlist);
+        if (tokens.length === 0) {
+            watchlistDiv.innerHTML = '<p class="text-gray-400 text-sm">No symbols added yet.</p>';
+            return;
+        }
+        tokens.forEach(token => {
+            const item = watchlist[token].symbolData;
+            const lastTick = watchlist[token].lastTick;
+            const symbolItemDiv = document.createElement('div');
+            symbolItemDiv.className = `watchlist-item p-2.5 border border-gray-700 rounded-md cursor-pointer flex justify-between items-center ${token === activeInstrumentToken ? 'active-symbol' : 'bg-gray-800'}`;
+            symbolItemDiv.setAttribute('data-token', token);
+            symbolItemDiv.addEventListener('click', () => loadChartForSymbol(token));
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'flex-grow';
+            const symbolName = document.createElement('span');
+            symbolName.className = 'font-medium text-gray-100';
+            symbolName.textContent = item.symbol;
+            infoDiv.appendChild(symbolName);
+            if (lastTick && lastTick.last_price !== undefined) {
+                const priceSpan = document.createElement('span');
+                let priceClass = 'text-gray-400';
+                if (lastTick.change && lastTick.change > 0) priceClass = 'text-green-400';
+                if (lastTick.change && lastTick.change < 0) priceClass = 'text-red-400';
+                priceSpan.className = `block text-xs ${priceClass}`;
+                priceSpan.textContent = `LTP: ${lastTick.last_price.toFixed(2)}`;
+                infoDiv.appendChild(priceSpan);
+            }
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'ml-2 text-red-400 hover:text-red-300 text-sm font-semibold';
+            removeBtn.innerHTML = '&times;';
+            removeBtn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                removeSymbolFromWatchlist(token);
+            });
+            symbolItemDiv.appendChild(infoDiv);
+            symbolItemDiv.appendChild(removeBtn);
+            watchlistDiv.appendChild(symbolItemDiv);
+        });
+    }
+
+    function updateWatchlistItemDisplay(instrumentToken) {
+        const itemDiv = watchlistDiv.querySelector(`[data-token="${instrumentToken}"]`);
+        if (itemDiv && watchlist[instrumentToken] && watchlist[instrumentToken].lastTick) {
+            const lastTick = watchlist[instrumentToken].lastTick;
+            let priceSpan = itemDiv.querySelector('.text-xs');
+            if (!priceSpan) {
+                priceSpan = document.createElement('span');
+                priceSpan.className = 'block text-xs';
+                itemDiv.firstChild.appendChild(priceSpan);
+            }
+            let priceClass = 'text-gray-400';
+            if (lastTick.change && lastTick.change > 0) priceClass = 'text-green-400';
+            if (lastTick.change && lastTick.change < 0) priceClass = 'text-red-400';
+            priceSpan.className = `block text-xs ${priceClass}`;
+            priceSpan.textContent = `LTP: ${lastTick.last_price.toFixed(2)}`;
+        }
+    }
+
+    function loadChartForSymbol(instrumentToken) {
+        if (!watchlist[instrumentToken]) return;
+        activeInstrumentToken = instrumentToken;
+        const symbolData = watchlist[instrumentToken].symbolData;
+        chartSymbolHeader.textContent = `${symbolData.symbol} (${symbolData.description || ''})`;
+        chartPlaceholder.classList.add('hidden');
+
+        if (lightweightChart) { // If chart exists, remove all series before adding new one
+            Object.values(watchlist).forEach(entry => {
+                if (entry.chartSeries) {
+                    try { lightweightChart.removeSeries(entry.chartSeries); } catch (e) { /* ignore */ }
+                    entry.chartSeries = null;
+                }
+            });
+        } else { // Create chart if it doesn't exist
+            chartContainer.innerHTML = '';
+            lightweightChart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: chartContainer.clientHeight,
+                layout: {
+                    backgroundColor: '#1a202c', // gray-900
+                    textColor: '#e2e8f0', // gray-200
+                },
+                grid: {
+                    vertLines: { color: '#2d3748' }, // gray-800
+                    horzLines: { color: '#2d3748' }, // gray-800
+                },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                timeScale: {
+                    borderColor: '#4a5568', // gray-600
+                    timeVisible: true,
+                    secondsVisible: false, // Usually not needed for daily/intraday candles
+                },
+            });
+        }
+
+        const newSeries = lightweightChart.addCandlestickSeries({
+            upColor: '#2f855a', // Green-600
+            downColor: '#c53030', // Red-600
+            borderDownColor: '#c53030',
+            borderUpColor: '#2f855a',
+            wickDownColor: '#c53030',
+            wickUpColor: '#2f855a',
+        });
+        watchlist[instrumentToken].chartSeries = newSeries;
+        renderWatchlist();
+        const tokensToSubscribe = Object.keys(watchlist);
+        if (tokensToSubscribe.length > 0) {
+             socket.emit('connect_dashboard_ws', { instrument_tokens: tokensToSubscribe });
+        }
+    }
+
+    new ResizeObserver(entries => {
+        if (entries.length === 0 || entries[0].target !== chartContainer) { return; }
+        if (lightweightChart) {
+            lightweightChart.applyOptions({
+                width: chartContainer.clientWidth,
+                height: chartContainer.clientHeight,
+            });
+        }
+    }).observe(chartContainer);
+    renderWatchlist();
+});
 </script>
 {% endblock %}

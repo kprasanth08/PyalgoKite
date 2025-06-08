@@ -1,97 +1,73 @@
-# This script loads Fyers API credentials from the .env file.
-# It guides the user through obtaining an auth_code by visiting a URL,
-# then prompts the user to paste the redirect URL to extract the auth_code,
+# This script loads Kite API credentials from the .env file.
+# It guides the user through obtaining a request_token by visiting a URL,
+# then prompts the user to paste the redirect URL to extract the request_token,
 # and finally uses it to fetch an access token and profile.
-from fyers_apiv3 import fyersModel
+from kiteconnect import KiteConnect
 import os
 from dotenv import load_dotenv, set_key
 from urllib.parse import urlparse, parse_qs
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG)
 
 # Load environment variables from .env
 dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(dotenv_path=dotenv_path, override=True)
 
-client_id = os.getenv("FYERS_CLIENT_ID")
-secret_key = os.getenv("FYERS_SECRET_KEY")
+api_key = os.getenv("KITE_API_KEY")
+api_secret = os.getenv("KITE_API_SECRET")
 redirect_uri = os.getenv("REDIRECT_URI") # This is your app's callback URL
-response_type = "code"
-grant_type = "authorization_code"
-state = os.getenv("STATE", "sample_state")
 
-if not all([client_id, secret_key, redirect_uri]):
-    print("Error: FYERS_CLIENT_ID, FYERS_SECRET_KEY, or REDIRECT_URI not set in .env file.")
+if not all([api_key, api_secret, redirect_uri]):
+    print("Error: KITE_API_KEY, KITE_API_SECRET, or REDIRECT_URI not set in .env file.")
     exit(1)
 
-print("--- Step 1: Get Authorization URL ---")
-# Create a session model to generate auth code URL
-session_for_authcode = fyersModel.SessionModel(
-    client_id=client_id,
-    secret_key=secret_key,
-    redirect_uri=redirect_uri,
-    response_type=response_type,
-    state=state
-)
-auth_url = session_for_authcode.generate_authcode()
-print(f"Please visit this URL in your browser to authorize the application:\n{auth_url}")
-print("\nAfter successful authorization, Fyers will redirect your browser.")
+print("--- Step 1: Get Login URL ---")
+kite = KiteConnect(api_key=api_key)
+
+login_url = kite.login_url()
+print(f"Please visit this URL in your browser to authorize the application:\n{login_url}")
+print("\nAfter successful authorization, Kite will redirect your browser to your redirect_uri.")
 
 # Prompt user to paste the full redirect URL
 full_redirect_url_from_user = input("Please paste the full redirect URL from your browser here: ").strip()
 
-# Parse the auth_code from the pasted URL
+# Parse the request_token from the pasted URL
 parsed_url = urlparse(full_redirect_url_from_user)
 query_params = parse_qs(parsed_url.query)
-auth_code = query_params.get('auth_code', [None])[0]
+request_token = query_params.get('request_token', [None])[0]
 
-if not auth_code:
-    print("\nError: Could not extract 'auth_code' from the URL you pasted.")
-    print("Please ensure you paste the complete URL from your browser after Fyers redirects you.")
-    print("It should look like: http://your-redirect-uri/path?s=ok&code=200&auth_code=XXXXXX&state=...")
+if not request_token:
+    print("\nError: Could not extract 'request_token' from the URL you pasted.")
+    print("Please ensure you paste the complete URL from your browser after Kite redirects you.")
+    print(f"It should look like: {redirect_uri}?request_token=XXXXXX&action=login&status=success")
     exit(1)
 
-print(f"\nExtracted AUTH_CODE: {auth_code}")
+print(f"\nExtracted REQUEST_TOKEN: {request_token}")
 print("\n--- Step 2: Get Access Token and Profile --- ")
 
-# Create a session model to generate access token
-session_for_token = fyersModel.SessionModel(
-    client_id=client_id,
-    secret_key=secret_key,
-    redirect_uri=redirect_uri,
-    response_type=response_type,
-    grant_type=grant_type
-)
-session_for_token.set_token(auth_code) # Set the extracted auth_code
-
 try:
-    token_response = session_for_token.generate_token()
-    print("\nToken Generation Response:")
-    print(token_response)
+    # Generate session using the request_token
+    data = kite.generate_session(request_token, api_secret=api_secret)
+    access_token = data["access_token"]
+    public_token = data["public_token"] # Kite specific
+    print(f"\nSuccessfully obtained Access Token: {access_token}")
+    print(f"Successfully obtained Public Token: {public_token}")
 
-    if token_response.get("s") == "ok" and token_response.get("access_token"):
-        generated_access_token = token_response["access_token"]
-        print(f"\nSuccessfully obtained Access Token: {generated_access_token}")
 
-        # Optionally, save the access token to .env for other scripts
-        # To enable, uncomment the next two lines:
-        # set_key(dotenv_path, "ACCESS_TOKEN", generated_access_token)
-        # print(f"Access token has been saved to '{dotenv_path}' as ACCESS_TOKEN.")
+    # Optionally, save the access token and public token to .env for other scripts
+    set_key(dotenv_path, "KITE_ACCESS_TOKEN", access_token)
+    set_key(dotenv_path, "KITE_PUBLIC_TOKEN", public_token) # Store public_token if needed
+    print(f"Access token and public token have been saved to '{dotenv_path}'.")
 
-        print("\n--- Fetching Profile --- ")
-        logs_dir = os.path.join(os.getcwd(), "logs")
-        os.makedirs(logs_dir, exist_ok=True)
+    # Set access token for subsequent API calls
+    kite.set_access_token(access_token)
 
-        fyers_profile_model = fyersModel.FyersModel(
-            client_id=client_id,
-            token=generated_access_token,
-            log_path=logs_dir
-        )
-        profile_response = fyers_profile_model.get_profile()
-        print("\nProfile Response:")
-        print(profile_response)
-    else:
-        print("\nFailed to obtain access token. Cannot fetch profile.")
-        error_message = token_response.get('message', 'No specific error message provided by Fyers.')
-        print(f"Fyers API Error: {error_message} (Code: {token_response.get('code')})")
+    print("\n--- Fetching Profile --- ")
+    profile = kite.profile()
+    print("\nProfile Response:")
+    print(profile)
 
 except Exception as e:
     print(f"An error occurred: {e}")
