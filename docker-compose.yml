@@ -1,0 +1,22 @@
+version: '3'
+
+services:
+  pyalgo:
+    build: .
+    container_name: pyalgo
+    restart: unless-stopped
+    ports:
+      - "6010:6010"
+    environment:
+      - APP_SECRET_KEY=${APP_SECRET_KEY}
+      - FYERS_CLIENT_ID=${FYERS_CLIENT_ID}
+      - FYERS_SECRET_KEY=${FYERS_SECRET_KEY}
+      - REDIRECT_URI=${REDIRECT_URI}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - pyalgo_net
+
+networks:
+  pyalgo_net:
+    driver: host
