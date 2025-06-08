@@ -489,7 +489,8 @@ def logout():
     user_id = session.get('user_id', 'UnknownUser')
     logger.info(f"User {user_id} logging out. Clearing session.")
     session.clear()
-    return redirect('/login')
+    # Instead of redirect, render the login page directly
+    return render_template('login.html', error=None)
 
 @app.route('/market_data')
 @require_login
