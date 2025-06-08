@@ -95,6 +95,71 @@ document.addEventListener('DOMContentLoaded', function() {
     let lightweightChart = null;
     let activeInstrumentToken = null;
 
+    // --- Load watchlist from backend on page load ---
+    fetch('/api/watchlist/load')
+        .then(response => response.json())
+        .then(async data => {
+            if (data && data.watchlist && Array.isArray(data.watchlist)) {
+                // Fetch latest data for each symbol in the saved watchlist
+                for (const item of data.watchlist) {
+                    if (item && item.instrument_token) {
+                        // Fetch latest LTP and change for this symbol
+                        try {
+                            const resp = await fetch(`/market_data?symbol=${encodeURIComponent(item.symbol || item.tradingsymbol)}`);
+                            const marketData = await resp.json();
+                            let lastTick = { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 };
+                            if (marketData && marketData.code === 200 && marketData.data && marketData.data.ltp) {
+                                lastTick.last_price = marketData.data.ltp;
+                                lastTick.change = marketData.data.change || 0;
+                                lastTick.open = marketData.data.open || 0;
+                                lastTick.high = marketData.data.high || 0;
+                                lastTick.low = marketData.data.low || 0;
+                                lastTick.close = marketData.data.close || 0;
+                                lastTick.percentage_change = marketData.data.percentage_change || 0;
+                            }
+                            let description = item.description && item.description !== 'N/A' ? item.description : item.symbol || item.tradingsymbol || 'N/A';
+                            watchlist[item.instrument_token] = {
+                                symbolData: { ...item, description },
+                                chartSeries: null,
+                                lastTick
+                            };
+                        } catch (e) {
+                            // fallback if fetch fails
+                            let description = item.description && item.description !== 'N/A' ? item.description : item.symbol || item.tradingsymbol || 'N/A';
+                            watchlist[item.instrument_token] = {
+                                symbolData: { ...item, description },
+                                chartSeries: null,
+                                lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 }
+                            };
+                        }
+                    }
+                }
+                renderWatchlist();
+            }
+        })
+        .catch(err => {
+            console.error('Failed to load watchlist:', err);
+        });
+
+    // --- Save watchlist to backend whenever it changes ---
+    function saveWatchlistToBackend() {
+        const instrument_tokens = Object.keys(watchlist);
+        fetch('/api/watchlist/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instrument_tokens })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (!data.status || data.status !== 'success') {
+                console.warn('Failed to save watchlist:', data);
+            }
+        })
+        .catch(err => {
+            console.error('Error saving watchlist:', err);
+        });
+    }
+
     socket.on('connect', () => {
         console.log('Socket.IO connected');
         chartStatusSpan.textContent = 'Connected';
@@ -172,9 +237,10 @@ document.addEventListener('DOMContentLoaded', function() {
         watchlist[item.instrument_token] = {
             symbolData: item,
             chartSeries: null,
-            lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 } // Initialize lastTick with all expected fields
+            lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 }
         };
         renderWatchlist();
+        saveWatchlistToBackend();
         if (!activeInstrumentToken) {
             loadChartForSymbol(item.instrument_token);
         }
@@ -195,6 +261,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         delete watchlist[instrumentToken];
         renderWatchlist();
+        saveWatchlistToBackend();
 
         const newTokens = Object.keys(watchlist);
         if (newTokens.length > 0) {
