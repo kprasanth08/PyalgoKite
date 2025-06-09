@@ -1,0 +1,60 @@
+{% extends "layout.html" %}
+{% block title %}Choose Login Method{% endblock %}
+{% block head %}
+    {{ super() }}
+    <style>
+        .login-container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 40px;
+            text-align: center;
+        }
+        .login-option {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+        .login-option:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            transform: translateY(-2px);
+        }
+        .login-btn {
+            display: inline-block;
+            padding: 10px 20px;
+            margin-top: 10px;
+            background-color: #0062cc;
+            color: white;
+            border-radius: 4px;
+            text-decoration: none;
+            transition: background-color 0.3s ease;
+        }
+        .login-btn:hover {
+            background-color: #004999;
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <h1>Choose Your Login Method</h1>
+    <p>Please select which brokerage you'd like to log in with:</p>
+
+    <div class="login-option">
+        <h2>Zerodha / Kite</h2>
+        <p>Use your Zerodha account to access trading functionality</p>
+        <a href="/login" class="login-btn">Login with Zerodha</a>
+    </div>
+
+    <div class="login-option">
+        <h2>Upstox</h2>
+        <p>Use your Upstox account for market data and trading</p>
+        <a href="/login_upstox" class="login-btn">Login with Upstox</a>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-danger mt-4">{{ error }}</div>
+    {% endif %}
+</div>
+{% endblock %}

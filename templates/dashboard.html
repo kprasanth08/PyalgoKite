@@ -82,7 +82,8 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    const socket = io({ transports: ['websocket'] });
+    const socket = io({ transports: ['websocket'] }); // Ensure Socket.IO is initialized
+
     const symbolSearchInput = document.getElementById('symbolSearch');
     const searchResultsDiv = document.getElementById('searchResults');
     const watchlistDiv = document.getElementById('watchlist');
@@ -91,68 +92,74 @@ document.addEventListener('DOMContentLoaded', function() {
     const chartStatusSpan = document.getElementById('chartStatus');
     const chartPlaceholder = document.getElementById('chartPlaceholder');
 
-    let watchlist = {};
+    let watchlist = {}; // Keyed by Upstox instrument_key
     let lightweightChart = null;
-    let activeInstrumentToken = null;
+    let activeInstrumentKey = null; // Renamed from activeInstrumentToken
 
     // --- Load watchlist from backend on page load ---
     fetch('/api/watchlist/load')
         .then(response => response.json())
         .then(async data => {
             if (data && data.watchlist && Array.isArray(data.watchlist)) {
-                // Fetch latest data for each symbol in the saved watchlist
-                for (const item of data.watchlist) {
-                    if (item && item.instrument_token) {
-                        // Fetch latest LTP and change for this symbol
-                        try {
-                            const resp = await fetch(`/market_data?symbol=${encodeURIComponent(item.symbol || item.tradingsymbol)}`);
-                            const marketData = await resp.json();
-                            let lastTick = { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 };
-                            if (marketData && marketData.code === 200 && marketData.data && marketData.data.ltp) {
-                                lastTick.last_price = marketData.data.ltp;
-                                lastTick.change = marketData.data.change || 0;
-                                lastTick.open = marketData.data.open || 0;
-                                lastTick.high = marketData.data.high || 0;
-                                lastTick.low = marketData.data.low || 0;
-                                lastTick.close = marketData.data.close || 0;
-                                lastTick.percentage_change = marketData.data.percentage_change || 0;
+                for (const savedItem of data.watchlist) { // savedItem can be a string or a basic object
+                    const symbolToFetch = typeof savedItem === 'string' ? savedItem : (savedItem.symbol || savedItem.tradingsymbol);
+                    if (!symbolToFetch) {
+                        console.warn('Skipping saved watchlist item with no symbol:', savedItem);
+                        continue;
+                    }
+                    try {
+                        // Fetch full instrument details to get the Upstox instrument_key
+                        const searchResp = await fetch(`/search-upstox-symbols?query=${encodeURIComponent(symbolToFetch)}`);
+                        const searchResults = await searchResp.json();
+
+                        if (searchResults && searchResults.length > 0) {
+                            // Find an exact match or the first result if only one.
+                            const fullItem = searchResults.find(res => (res.symbol || res.tradingsymbol) === symbolToFetch) || searchResults[0];
+
+                            if (fullItem && fullItem.instrument_key) {
+                                watchlist[fullItem.instrument_key] = {
+                                    symbolData: { ...fullItem, description: fullItem.name || fullItem.description || fullItem.symbol },
+                                    chartSeries: null,
+                                    lastTick: { last_price: fullItem.last_price || 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0, timestamp: Date.now() }
+                                };
+                            } else {
+                                console.warn(`Could not find full details or instrument_key for saved symbol: ${symbolToFetch}`);
                             }
-                            let description = item.description && item.description !== 'N/A' ? item.description : item.symbol || item.tradingsymbol || 'N/A';
-                            watchlist[item.instrument_token] = {
-                                symbolData: { ...item, description },
-                                chartSeries: null,
-                                lastTick
-                            };
-                        } catch (e) {
-                            // fallback if fetch fails
-                            let description = item.description && item.description !== 'N/A' ? item.description : item.symbol || item.tradingsymbol || 'N/A';
-                            watchlist[item.instrument_token] = {
-                                symbolData: { ...item, description },
-                                chartSeries: null,
-                                lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 }
-                            };
                         }
+                    } catch (e) {
+                        console.error(`Error processing saved watchlist symbol ${symbolToFetch}:`, e);
                     }
                 }
                 renderWatchlist();
+                // Subscribe to all loaded watchlist items
+                const keysToSubscribe = Object.keys(watchlist);
+                if (keysToSubscribe.length > 0) {
+                    socket.emit('subscribe_upstox_market_data', { instrument_keys: keysToSubscribe });
+                }
+            } else {
+                console.warn('No watchlist data found or invalid format:', data);
             }
         })
         .catch(err => {
             console.error('Failed to load watchlist:', err);
+            chartStatusSpan.textContent = 'Error loading watchlist';
+            chartStatusSpan.className = 'text-sm text-red-400';
         });
 
     // --- Save watchlist to backend whenever it changes ---
     function saveWatchlistToBackend() {
-        const instrument_tokens = Object.keys(watchlist);
+        const symbolsToSave = Object.values(watchlist).map(item => item.symbolData.symbol || item.symbolData.tradingsymbol);
         fetch('/api/watchlist/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ instrument_tokens })
+            body: JSON.stringify({ symbols: symbolsToSave }) // Server expects {symbols: [...]}
         })
         .then(response => response.json())
         .then(data => {
             if (!data.status || data.status !== 'success') {
                 console.warn('Failed to save watchlist:', data);
+            } else {
+                console.log('Watchlist saved successfully.');
             }
         })
         .catch(err => {
@@ -160,41 +167,69 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // --- Socket.IO Event Handlers ---
     socket.on('connect', () => {
-        console.log('Socket.IO connected');
+        console.log('Socket.IO connected for Upstox data.');
         chartStatusSpan.textContent = 'Connected';
         chartStatusSpan.className = 'text-sm text-green-400';
+        // If there are items in watchlist, re-subscribe (e.g., on reconnect)
+        const keysInWatchlist = Object.keys(watchlist);
+        if (keysInWatchlist.length > 0) {
+            socket.emit('subscribe_upstox_market_data', { instrument_keys: keysInWatchlist });
+        }
     });
 
     socket.on('disconnect', () => {
-        console.log('Socket.IO disconnected');
+        console.log('Socket.IO disconnected.');
         chartStatusSpan.textContent = 'Disconnected';
         chartStatusSpan.className = 'text-sm text-red-400';
     });
 
-    socket.on('dashboard_chart_data', (data) => {
-        if (data && data.instrument_token && watchlist[data.instrument_token]) {
-            const symbolInfo = watchlist[data.instrument_token];
-            symbolInfo.lastTick = data; // Store the whole tick
+    socket.on('upstox_market_tick', function(tickData) {
+        // console.log('Received Upstox Tick:', tickData);
+        if (tickData && tickData.instrument_key && watchlist[tickData.instrument_key]) {
+            const symbolInfo = watchlist[tickData.instrument_key];
+            symbolInfo.lastTick = { // Ensure all expected fields are present
+                last_price: tickData.last_price,
+                change: tickData.change,
+                percentage_change: tickData.percentage_change,
+                ohlc: tickData.ohlc,
+                timestamp: tickData.timestamp || Date.now(),
+                last_traded_time: tickData.last_traded_time
+            };
 
-            if (symbolInfo.chartSeries && data.last_price) {
+            if (symbolInfo.chartSeries && tickData.last_price && activeInstrumentKey === tickData.instrument_key) {
                 const candle = {
-                    time: Math.floor(data.timestamp ? new Date(data.timestamp).getTime() / 1000 : new Date().getTime() / 1000),
-                    open: data.ohlc && data.ohlc.open !== undefined ? data.ohlc.open : data.last_price,
-                    high: data.ohlc && data.ohlc.high !== undefined ? data.ohlc.high : data.last_price,
-                    low: data.ohlc && data.ohlc.low !== undefined ? data.ohlc.low : data.last_price,
-                    close: data.last_price
+                    time: Math.floor((tickData.timestamp || Date.now()) / 1000),
+                    open: tickData.ohlc ? tickData.ohlc.open : tickData.last_price,
+                    high: tickData.ohlc ? tickData.ohlc.high : tickData.last_price,
+                    low: tickData.ohlc ? tickData.ohlc.low : tickData.last_price,
+                    close: tickData.last_price
                 };
-                symbolInfo.chartSeries.update(candle);
+                try {
+                  symbolInfo.chartSeries.update(candle);
+                } catch (e) {
+                  console.error("Error updating chart series:", e, candle);
+                }
             }
-            updateWatchlistItemDisplay(data.instrument_token);
+            updateWatchlistItemDisplay(tickData.instrument_key);
         }
     });
 
-    socket.on('kite_order_update', (order) => {
-        console.log('Order Update (from dashboard):', order);
+    socket.on('upstox_market_data_status', function(data) {
+        console.log('Upstox Market Data Status:', data.status);
+        chartStatusSpan.textContent = data.status;
+        // chartStatusSpan.className = 'text-sm text-green-400'; // Or based on status
     });
 
+    socket.on('upstox_market_data_error', function(data) {
+        console.error('Upstox Market Data Error:', data.error);
+        chartStatusSpan.textContent = `Error: ${data.error}`;
+        chartStatusSpan.className = 'text-sm text-red-400';
+    });
+
+
+    // --- Symbol Search ---
     symbolSearchInput.addEventListener('input', function() {
         const query = this.value.trim();
         if (query.length < 2) {
@@ -202,17 +237,18 @@ document.addEventListener('DOMContentLoaded', function() {
             searchResultsDiv.classList.add('hidden');
             return;
         }
-        fetch(`${window.location.origin}/search-nse-symbols?query=${encodeURIComponent(query)}`)
+        // Use /search-upstox-symbols
+        fetch(`${window.location.origin}/search-upstox-symbols?query=${encodeURIComponent(query)}`)
             .then(response => response.json())
             .then(data => {
                 searchResultsDiv.innerHTML = '';
                 if (data.error) {
                     searchResultsDiv.innerHTML = `<div class="p-2 text-red-400">${data.error}</div>`;
                 } else if (data.length > 0) {
-                    data.forEach(item => {
+                    data.forEach(item => { // item from Upstox search should have instrument_key
                         const resultItem = document.createElement('div');
                         resultItem.className = 'p-2 hover:bg-gray-600 cursor-pointer border-b border-gray-500 text-gray-200 text-sm';
-                        resultItem.textContent = `${item.symbol} - ${item.description || ''}`;
+                        resultItem.textContent = `${item.symbol || item.tradingsymbol} - ${item.name || item.description || ''}`;
                         resultItem.addEventListener('click', function() {
                             addSymbolToWatchlist(item);
                             symbolSearchInput.value = '';
@@ -226,130 +262,128 @@ document.addEventListener('DOMContentLoaded', function() {
                 searchResultsDiv.classList.remove('hidden');
             })
             .catch(error => {
-                console.error('Error searching symbols:', error);
+                console.error('Error searching Upstox symbols:', error);
                 searchResultsDiv.innerHTML = '<div class="p-2 text-red-400 text-sm">Error during search.</div>';
                 searchResultsDiv.classList.remove('hidden');
             });
     });
 
-    function addSymbolToWatchlist(item) {
-        if (watchlist[item.instrument_token]) return;
-        watchlist[item.instrument_token] = {
-            symbolData: item,
+    // --- Watchlist Management ---
+    function addSymbolToWatchlist(item) { // item is from Upstox search result
+        if (!item || !item.instrument_key) {
+            console.error("Cannot add symbol: item is invalid or missing instrument_key", item);
+            return;
+        }
+        if (watchlist[item.instrument_key]) {
+            console.log("Symbol already in watchlist:", item.instrument_key);
+            return; // Already in watchlist
+        }
+
+        watchlist[item.instrument_key] = {
+            symbolData: { ...item, description: item.name || item.description || item.symbol }, // Ensure description
             chartSeries: null,
-            lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0 }
+            lastTick: { last_price: item.last_price || 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0, timestamp: Date.now() }
         };
         renderWatchlist();
         saveWatchlistToBackend();
-        if (!activeInstrumentToken) {
-            loadChartForSymbol(item.instrument_token);
-        }
-        const tokensToSubscribe = Object.keys(watchlist);
-        if (tokensToSubscribe.length > 0) {
-             socket.emit('connect_dashboard_ws', { instrument_tokens: tokensToSubscribe });
+
+        socket.emit('subscribe_upstox_market_data', { instrument_keys: [item.instrument_key] });
+
+        if (!activeInstrumentKey) {
+            loadChartForSymbol(item.instrument_key);
         }
     }
 
-    function removeSymbolFromWatchlist(instrumentToken) {
-        if (!watchlist[instrumentToken]) return;
+    function removeSymbolFromWatchlist(instrumentKeyToRemove) { // Argument is Upstox instrument_key
+        if (!watchlist[instrumentKeyToRemove]) return;
 
-        const oldTokens = Object.keys(watchlist);
-
-        const series = watchlist[instrumentToken].chartSeries;
+        const series = watchlist[instrumentKeyToRemove].chartSeries;
         if (series && lightweightChart) {
-            lightweightChart.removeSeries(series);
+            try { lightweightChart.removeSeries(series); } catch(e) { console.warn("Error removing series on remove:", e); }
         }
-        delete watchlist[instrumentToken];
+        delete watchlist[instrumentKeyToRemove];
         renderWatchlist();
         saveWatchlistToBackend();
 
-        const newTokens = Object.keys(watchlist);
-        if (newTokens.length > 0) {
-            socket.emit('connect_dashboard_ws', { instrument_tokens: newTokens });
-        } else if (oldTokens.length > 0 && newTokens.length === 0) {
-            socket.emit('connect_dashboard_ws', { instrument_tokens_to_unsubscribe: oldTokens });
-        }
+        socket.emit('unsubscribe_upstox_market_data', { instrument_keys: [instrumentKeyToRemove] });
 
-        if (activeInstrumentToken === instrumentToken) {
-            activeInstrumentToken = null;
+        if (activeInstrumentKey === instrumentKeyToRemove) {
+            activeInstrumentKey = null;
             chartSymbolHeader.textContent = 'Live Chart';
             if (lightweightChart) {
-                 chartContainer.innerHTML = '';
-                 lightweightChart = null;
-                 chartContainer.appendChild(chartPlaceholder); // Re-add placeholder explicitly
+                 chartContainer.innerHTML = ''; // Clear chart
+                 lightweightChart = null; // Reset chart object
+                 chartContainer.appendChild(chartPlaceholder);
             }
-            chartPlaceholder.classList.remove('hidden'); // Ensure placeholder is visible
-            const remainingTokens = Object.keys(watchlist);
-            if (remainingTokens.length > 0) {
-                loadChartForSymbol(remainingTokens[0]);
+            chartPlaceholder.classList.remove('hidden');
+            const remainingKeys = Object.keys(watchlist);
+            if (remainingKeys.length > 0) {
+                loadChartForSymbol(remainingKeys[0]); // Load first from remaining
             }
         }
     }
 
     function renderWatchlist() {
         watchlistDiv.innerHTML = '';
-        const tokens = Object.keys(watchlist);
-        if (tokens.length === 0) {
+        const instrumentKeys = Object.keys(watchlist);
+        if (instrumentKeys.length === 0) {
             watchlistDiv.innerHTML = '<p class="text-gray-500 text-sm px-1">No symbols added yet.</p>';
             return;
         }
 
-        tokens.forEach(token => {
-            const itemData = watchlist[token].symbolData;
-            const lastTick = watchlist[token].lastTick || {};
-            const ltp = lastTick.last_price !== undefined ? lastTick.last_price.toFixed(2) : '-';
-            const change = lastTick.change !== undefined ? lastTick.change.toFixed(2) : '0.00';
-            const percentageChange = lastTick.percentage_change !== undefined ? lastTick.percentage_change.toFixed(2) : '0.00';
+        instrumentKeys.forEach(currentInstrumentKey => {
+            const item = watchlist[currentInstrumentKey];
+            if (!item || !item.symbolData) {
+                console.warn("Skipping rendering for invalid watchlist item with key:", currentInstrumentKey, item);
+                return;
+            }
+            const itemData = item.symbolData;
+            const lastTick = item.lastTick || {};
+
+            const ltp = lastTick.last_price !== undefined ? Number(lastTick.last_price).toFixed(2) : '-';
+            const change = lastTick.change !== undefined ? Number(lastTick.change).toFixed(2) : '0.00';
+            const percentageChange = lastTick.percentage_change !== undefined ? Number(lastTick.percentage_change).toFixed(2) : '0.00';
 
             let changeClass = 'text-gray-400';
             if (parseFloat(change) > 0) changeClass = 'text-positive';
             if (parseFloat(change) < 0) changeClass = 'text-negative';
 
             const symbolItemDiv = document.createElement('div');
-            symbolItemDiv.className = `watchlist-item p-2 rounded-md cursor-pointer flex flex-col ${token === activeInstrumentToken ? 'active-symbol' : 'bg-gray-800'}`;
-            symbolItemDiv.setAttribute('data-token', token);
-            symbolItemDiv.addEventListener('click', () => loadChartForSymbol(token));
+            // Use instrumentKey for data-token
+            symbolItemDiv.className = `watchlist-item p-2 rounded-md cursor-pointer flex flex-col ${currentInstrumentKey === activeInstrumentKey ? 'active-symbol' : 'bg-gray-800'}`;
+            symbolItemDiv.setAttribute('data-token', currentInstrumentKey);
+            symbolItemDiv.addEventListener('click', () => loadChartForSymbol(currentInstrumentKey));
 
-            // Top Row: Symbol and LTP
             const topRow = document.createElement('div');
             topRow.className = 'flex justify-between items-center w-full';
-
             const symbolName = document.createElement('span');
-            symbolName.className = 'symbol-name font-semibold text-sm text-gray-100 truncate'; // Added truncate
-            symbolName.textContent = itemData.symbol;
+            symbolName.className = 'symbol-name font-semibold text-sm text-gray-100 truncate';
+            symbolName.textContent = itemData.symbol || itemData.tradingsymbol;
             topRow.appendChild(symbolName);
-
             const ltpSpan = document.createElement('span');
-            ltpSpan.className = `symbol-ltp text-sm font-medium ${token === activeInstrumentToken ? 'text-white' : 'text-gray-200'}`;
+            ltpSpan.className = `symbol-ltp text-sm font-medium ${currentInstrumentKey === activeInstrumentKey ? 'text-white' : 'text-gray-200'}`;
             ltpSpan.textContent = ltp;
             topRow.appendChild(ltpSpan);
             symbolItemDiv.appendChild(topRow);
 
-            // Middle Row: Description (Company Name) and Change Details
             const descriptionRow = document.createElement('div');
-            descriptionRow.className = 'flex justify-between items-center w-full mt-0.5'; // Made it a flex container
-
+            descriptionRow.className = 'flex justify-between items-center w-full mt-0.5';
             const descriptionSpan = document.createElement('span');
-            descriptionSpan.className = `symbol-description text-xs ${token === activeInstrumentToken ? 'text-white' : 'text-gray-400'} truncate`; // Removed block, truncate will work with flex
-            descriptionSpan.textContent = itemData.description || 'N/A';
-            descriptionSpan.style.maxWidth = '60%'; // Limit width of description to allow space for change details
+            descriptionSpan.className = `symbol-description text-xs ${currentInstrumentKey === activeInstrumentKey ? 'text-white' : 'text-gray-400'} truncate`;
+            descriptionSpan.textContent = itemData.description || itemData.name || 'N/A';
+            descriptionSpan.style.maxWidth = '60%';
             descriptionRow.appendChild(descriptionSpan);
-
-            // Container for Change and Percentage Change (to group them on the right)
             const changeDetailsContainer = document.createElement('div');
-            changeDetailsContainer.className = 'flex items-baseline'; // Use items-baseline for better alignment if font sizes differ
-
+            changeDetailsContainer.className = 'flex items-baseline';
             const changeSpan = document.createElement('span');
             changeSpan.className = `symbol-change text-xs ${changeClass}`;
             changeSpan.textContent = change;
             changeDetailsContainer.appendChild(changeSpan);
-
             const percentageChangeSpan = document.createElement('span');
-            percentageChangeSpan.className = `symbol-percentage-change text-xs ${changeClass} ml-1`; // Added ml-1 for spacing
+            percentageChangeSpan.className = `symbol-percentage-change text-xs ${changeClass} ml-1`;
             percentageChangeSpan.textContent = `(${percentageChange}%)`;
             changeDetailsContainer.appendChild(percentageChangeSpan);
-
-            descriptionRow.appendChild(changeDetailsContainer); // Add grouped change details to the right
+            descriptionRow.appendChild(changeDetailsContainer);
             symbolItemDiv.appendChild(descriptionRow);
 
             const removeBtn = document.createElement('button');
@@ -358,30 +392,28 @@ document.addEventListener('DOMContentLoaded', function() {
             removeBtn.style.lineHeight = '1';
             removeBtn.addEventListener('click', (event) => {
                 event.stopPropagation();
-                removeSymbolFromWatchlist(token);
+                removeSymbolFromWatchlist(currentInstrumentKey);
             });
             symbolItemDiv.style.position = 'relative';
             symbolItemDiv.appendChild(removeBtn);
-
             watchlistDiv.appendChild(symbolItemDiv);
         });
     }
 
-    function updateWatchlistItemDisplay(instrumentToken) {
-        const itemDiv = watchlistDiv.querySelector(`[data-token="${instrumentToken}"]`);
-        if (!itemDiv || !watchlist[instrumentToken] || !watchlist[instrumentToken].lastTick) return;
+    function updateWatchlistItemDisplay(instrumentKeyToUpdate) { // Argument is Upstox instrument_key
+        const itemDiv = watchlistDiv.querySelector(`[data-token="${instrumentKeyToUpdate}"]`);
+        if (!itemDiv || !watchlist[instrumentKeyToUpdate] || !watchlist[instrumentKeyToUpdate].lastTick) return;
 
-        const lastTick = watchlist[instrumentToken].lastTick;
-        const ltp = lastTick.last_price !== undefined ? lastTick.last_price.toFixed(2) : '-';
-        const change = lastTick.change !== undefined ? lastTick.change.toFixed(2) : '0.00';
-        const percentageChange = lastTick.percentage_change !== undefined ? lastTick.percentage_change.toFixed(2) : '0.00';
+        const lastTick = watchlist[instrumentKeyToUpdate].lastTick;
+        const ltp = lastTick.last_price !== undefined ? Number(lastTick.last_price).toFixed(2) : '-';
+        const change = lastTick.change !== undefined ? Number(lastTick.change).toFixed(2) : '0.00';
+        const percentageChange = lastTick.percentage_change !== undefined ? Number(lastTick.percentage_change).toFixed(2) : '0.00';
 
         const ltpSpan = itemDiv.querySelector('.symbol-ltp');
         if (ltpSpan) ltpSpan.textContent = ltp;
 
         const changeSpan = itemDiv.querySelector('.symbol-change');
         const percentageChangeSpan = itemDiv.querySelector('.symbol-percentage-change');
-
         let changeClass = 'text-gray-400';
         if (parseFloat(change) > 0) changeClass = 'text-positive';
         if (parseFloat(change) < 0) changeClass = 'text-negative';
@@ -392,78 +424,61 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         if (percentageChangeSpan) {
             percentageChangeSpan.textContent = `(${percentageChange}%)`;
-            percentageChangeSpan.className = `symbol-percentage-change text-xs ${changeClass}`;
+            percentageChangeSpan.className = `symbol-percentage-change text-xs ${changeClass} ml-1`;
         }
-        // Update active symbol text color if necessary
-        if (instrumentToken === activeInstrumentToken) {
-            if(ltpSpan) ltpSpan.classList.add('text-white');
+        if (instrumentKeyToUpdate === activeInstrumentKey) {
+            if(ltpSpan) ltpSpan.classList.add('text-white'); // Ensure active item LTP is white
         }
     }
 
-    function loadChartForSymbol(instrumentToken) {
-        if (!watchlist[instrumentToken]) return;
-        activeInstrumentToken = instrumentToken;
-        const symbolData = watchlist[instrumentToken].symbolData;
-        chartSymbolHeader.textContent = `${symbolData.symbol} (${symbolData.description || 'N/A'})`;
+    function loadChartForSymbol(instrumentKeyToLoad) { // Argument is Upstox instrument_key
+        if (!watchlist[instrumentKeyToLoad]) return;
+
+        const oldActiveKey = activeInstrumentKey;
+        activeInstrumentKey = instrumentKeyToLoad;
+
+        const symbolData = watchlist[instrumentKeyToLoad].symbolData;
+        chartSymbolHeader.textContent = `${symbolData.symbol || symbolData.tradingsymbol} (${symbolData.description || 'N/A'})`;
         chartPlaceholder.classList.add('hidden');
 
         if (lightweightChart) {
-            Object.values(watchlist).forEach(entry => {
-                if (entry.chartSeries && entry.symbolData.instrument_token !== activeInstrumentToken) {
-                    try { lightweightChart.removeSeries(entry.chartSeries); } catch (e) { /* ignore */ }
-                    entry.chartSeries = null;
-                }
-            });
+            // Remove series of previously active symbol if it's different
+            if (oldActiveKey && oldActiveKey !== activeInstrumentKey && watchlist[oldActiveKey] && watchlist[oldActiveKey].chartSeries) {
+                 try { lightweightChart.removeSeries(watchlist[oldActiveKey].chartSeries); } catch(e) { /* ignore */ }
+                 watchlist[oldActiveKey].chartSeries = null;
+            }
         } else {
-            chartContainer.innerHTML = '';
+            chartContainer.innerHTML = ''; // Clear placeholder
             lightweightChart = LightweightCharts.createChart(chartContainer, {
                 width: chartContainer.clientWidth,
                 height: chartContainer.clientHeight,
-                layout: {
-                    backgroundColor: '#1f2937',
-                    textColor: '#d1d5db',
-                },
-                grid: {
-                    vertLines: { color: '#374151' },
-                    horzLines: { color: '#374151' },
-                },
+                layout: { backgroundColor: '#1f2937', textColor: '#d1d5db' },
+                grid: { vertLines: { color: '#374151' }, horzLines: { color: '#374151' } },
                 crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                timeScale: {
-                    borderColor: '#4b5563',
-                    timeVisible: true,
-                    secondsVisible: false,
-                },
-                priceScale: {
-                    borderColor: '#4b5563',
-                },
+                timeScale: { borderColor: '#4b5563', timeVisible: true, secondsVisible: false },
+                priceScale: { borderColor: '#4b5563' },
             });
         }
 
-        Object.keys(watchlist).forEach(token => {
-            if (token !== activeInstrumentToken && watchlist[token].chartSeries) {
-                try { lightweightChart.removeSeries(watchlist[token].chartSeries); } catch (e) { /* ignore */ }
-                watchlist[token].chartSeries = null;
+        // Ensure only the active symbol's series is present
+        Object.keys(watchlist).forEach(key => {
+            if (key !== activeInstrumentKey && watchlist[key].chartSeries) {
+                try { lightweightChart.removeSeries(watchlist[key].chartSeries); } catch(e) { /* ignore */ }
+                watchlist[key].chartSeries = null;
             }
         });
 
-        if (!watchlist[activeInstrumentToken].chartSeries) {
+        if (!watchlist[activeInstrumentKey].chartSeries) {
             const newSeries = lightweightChart.addCandlestickSeries({
-                upColor: '#10b981',
-                downColor: '#f43f5e',
-                borderDownColor: '#f43f5e',
-                borderUpColor: '#10b981',
-                wickDownColor: '#f43f5e',
-                wickUpColor: '#10b981',
+                upColor: '#10b981', downColor: '#f43f5e',
+                borderDownColor: '#f43f5e', borderUpColor: '#10b981',
+                wickDownColor: '#f43f5e', wickUpColor: '#10b981',
             });
-            watchlist[activeInstrumentToken].chartSeries = newSeries;
+            watchlist[activeInstrumentKey].chartSeries = newSeries;
+            // TODO: Optionally load historical data here for the new series
+            // For now, it will only update with live ticks.
         }
-
-        renderWatchlist();
-
-        const tokensToSubscribe = Object.keys(watchlist);
-        if (tokensToSubscribe.length > 0) {
-             socket.emit('connect_dashboard_ws', { instrument_tokens: tokensToSubscribe });
-        }
+        renderWatchlist(); // Re-render to update active styles
     }
 
     new ResizeObserver(entries => {
@@ -475,6 +490,8 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         }
     }).observe(chartContainer);
+
+    // Initial render in case watchlist is empty or fails to load fully
     renderWatchlist();
 });
 </script>

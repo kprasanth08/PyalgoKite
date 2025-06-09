@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, session, jsonify
+from flask import Flask, render_template, request, redirect, session, jsonify, make_response
 from kiteconnect import KiteConnect, KiteTicker
 from dotenv import load_dotenv
 import os
@@ -8,6 +8,10 @@ import threading
 import time
 from functools import wraps
 import json
+import upstox_service  # Import the new Upstox service
+import asyncio  # For running async websocket code
+import requests
+from datetime import datetime, timedelta
 
 # Ensure logs directory exists
 log_dir = os.path.join(os.getcwd(), "logs")
@@ -53,8 +57,21 @@ instrument_map_by_token = {}
 WATCHLIST_DIR = os.path.join(os.getcwd(), "user_watchlists")
 os.makedirs(WATCHLIST_DIR, exist_ok=True)
 
+# Global variables for Upstox WebSocket
+upstox_ws_thread = None
+upstox_subscribed_instrument_keys = set()  # Stores keys like "NSE_EQ|INE002A01018"
+
 def get_watchlist_filepath(user_id):
     return os.path.join(WATCHLIST_DIR, f"{user_id}_watchlist.json")
+
+# Middleware to check if the user is logged in
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Global WebSocket client and thread for the dashboard chart
 kws_ticker = None
@@ -75,11 +92,18 @@ def get_access_token():
 def require_login(f):
     """
     Decorator to ensure user is logged in before accessing protected routes
+    Checks for both Kite and Upstox authentication
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not get_access_token():
-            return redirect('/login')
+        # Check if user is logged in with either Kite or Upstox
+        kite_authenticated = get_access_token() is not None
+        upstox_authenticated = session.get('upstox_authenticated', False)
+
+        if not (kite_authenticated or upstox_authenticated):
+            # If not authenticated with either service, redirect to login selection page
+            return redirect('/login_selection')
+
         return f(*args, **kwargs)
     return decorated_function
 
@@ -164,243 +188,169 @@ def kite_websocket_task(access_token_ws, public_token_ws, symbols_to_subscribe_t
         if kws_ticker and kws_ticker.is_connected():
             kws_ticker.stop()
 
-@app.route('/search-nse-symbols', methods=['GET'])
-@require_login
-def search_nse_symbols():
-    kite = get_kite_instance()
-    if not kite:
-        return jsonify({"error": "User not authenticated or Kite instance unavailable"}), 401
-
+def process_upstox_feed(feed_response, emit_callback):
+    """
+    Processes the protobuf FeedResponse and extracts relevant market data.
+    Emits a structured tick to the client via the provided callback.
+    """
     try:
-        ensure_instruments_cached(kite)
-    except Exception as e:
-        logger.error(f"Failed to ensure instruments are cached for search: {e}")
-        return jsonify({"error": "Failed to initialize instrument data"}), 500
-
-    query = request.args.get('query', '').lower()
-    if not query or len(query) < 2:
-        return jsonify([])
-
-    try:
-        search_results_from_cache = [
-            inst for symbol, inst in instrument_map_by_symbol.items()
-            if query in symbol.lower() or query in inst.get('name', '').lower()
-        ]
-        processed_results = [
-            {
-                "symbol": item['tradingsymbol'],
-                "description": item.get('name', item['tradingsymbol']),
-                "instrument_token": item['instrument_token'],
-                "exchange": item['exchange'],
-                "instrument_type": item.get('instrument_type')
+        for instrument_key, feed_data in feed_response.feeds.items():
+            tick = {
+                "instrument_key": instrument_key,
+                "timestamp": int(time.time() * 1000)
             }
-            for item in search_results_from_cache
-        ]
-        return jsonify(processed_results[:50])
-    except Exception as e:
-        logger.error(f"Error in search_nse_symbols: {str(e)}")
-        return jsonify({"error": "An internal error occurred during symbol search"}), 500
 
-@app.route('/api/watchlist/load', methods=['GET'])
+            if feed_data.ff.marketFF.ltpc:
+                ltpc = feed_data.ff.marketFF.ltpc
+                tick["last_price"] = ltpc.ltp
+                tick["change"] = ltpc.ch if ltpc.ch is not None else (ltpc.ltp - ltpc.cp if ltpc.ltp and ltpc.cp else 0)
+                tick["percentage_change"] = ltpc.chp
+                tick["last_traded_time"] = ltpc.ltt
+                if ltpc.ltt:
+                    tick["timestamp"] = ltpc.ltt * 1000
+
+            if feed_data.ff.marketFF.ohlc:
+                ohlc = feed_data.ff.marketFF.ohlc
+                tick["ohlc"] = {
+                    "open": ohlc.open,
+                    "high": ohlc.high,
+                    "low": ohlc.low,
+                    "close": ohlc.close
+                }
+
+            emit_callback('upstox_market_tick', tick)
+
+    except Exception as e:
+        logger.error(f"Error processing Upstox feed: {e}", exc_info=True)
+
+@socketio.on('subscribe_upstox_market_data')
 @require_login
-def load_watchlist_route():
-    user_id = session.get('user_id')
-    if not user_id:
-        logger.warning("Attempt to load watchlist without user_id in session.")
-        return jsonify({"error": "User ID not found in session"}), 401
+def handle_subscribe_upstox_market_data(data):
+    global upstox_ws_thread, upstox_subscribed_instrument_keys
 
-    kite = get_kite_instance()
-    if not kite:
-         logger.error(f"Kite instance not available for user {user_id} during watchlist load.")
-         return jsonify({"error": "Kite instance not available"}), 500
-    try:
-        ensure_instruments_cached(kite)
-    except Exception as e:
-        logger.error(f"Failed to ensure instruments are cached for watchlist load (user {user_id}): {e}")
-        return jsonify({"error": "Failed to initialize instrument data for watchlist"}), 500
+    instrument_keys_to_subscribe = data.get('instrument_keys', [])
+    if not isinstance(instrument_keys_to_subscribe, list) or not instrument_keys_to_subscribe:
+        logger.warning("Invalid or empty instrument_keys for Upstox subscription.")
+        emit('upstox_market_data_error', {'error': 'Invalid instrument keys provided.'})
+        return
 
-    filepath = get_watchlist_filepath(user_id)
-    saved_instruments_details = []
-    if os.path.exists(filepath):
+    logger.info(f"Request to subscribe/update Upstox market data for: {instrument_keys_to_subscribe}")
+
+    upstox_api_client = upstox_service.get_configuration_api_client()
+    if not upstox_api_client:
+        logger.error("Failed to get Upstox ApiClient for WebSocket.")
+        emit('upstox_market_data_error', {'error': 'Upstox authentication failed or ApiClient not available.'})
+        return
+
+    feed_url = upstox_service.get_market_data_feed_authorize_url(upstox_api_client)
+    if not feed_url:
+        logger.error("Failed to get Upstox market data feed URL.")
+        emit('upstox_market_data_error', {'error': 'Failed to get market data feed URL.'})
+        return
+
+    new_subscription_set = set(instrument_keys_to_subscribe)
+
+    if new_subscription_set == upstox_subscribed_instrument_keys and upstox_ws_thread and upstox_ws_thread.is_alive():
+        logger.info("Upstox subscriptions unchanged and WebSocket thread is alive. No action needed.")
+        emit('upstox_market_data_status', {
+            'status': f'Already subscribed to {list(upstox_subscribed_instrument_keys)} via active WebSocket.'
+        })
+        return
+
+    upstox_subscribed_instrument_keys = new_subscription_set
+    if not upstox_subscribed_instrument_keys:
+        logger.info("No instruments to subscribe to for Upstox WebSocket. Stopping thread if running.")
+        if upstox_ws_thread and upstox_ws_thread.is_alive():
+            pass
+        emit('upstox_market_data_status', {'status': 'No instruments for Upstox WebSocket subscription.'})
+        return
+
+    def on_upstox_message_socketio(feed_response):
+        process_upstox_feed(feed_response, socketio.emit)
+
+    if upstox_ws_thread and upstox_ws_thread.is_alive():
+        logger.info("Stopping existing Upstox WebSocket thread for re-subscription.")
+        pass
+
+    logger.info(f"Starting new Upstox WebSocket thread for instruments: {list(upstox_subscribed_instrument_keys)}")
+
+    def run_websocket_loop_in_thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            with open(filepath, 'r') as f:
-                instrument_tokens = json.load(f)
-            if not isinstance(instrument_tokens, list):
-                logger.warning(f"Watchlist file for user {user_id} does not contain a list. File: {filepath}. Treating as empty.")
-                instrument_tokens = []
+            loop.run_until_complete(upstox_service.connect_and_stream_market_data(
+                feed_url,
+                list(upstox_subscribed_instrument_keys),
+                on_upstox_message_socketio
+            ))
+        except Exception as e_thread:
+            logger.error(f"Exception in Upstox WebSocket thread's event loop: {e_thread}", exc_info=True)
+        finally:
+            loop.close()
+            logger.info("Upstox WebSocket thread event loop closed.")
 
-            for token_from_file in instrument_tokens:
-                try:
-                    token_key = int(token_from_file)
-                    if token_key in instrument_map_by_token:
-                        saved_instruments_details.append(instrument_map_by_token[token_key])
-                    else:
-                        logger.warning(f"Token {token_key} from user {user_id}'s watchlist not found in instrument cache.")
-                except ValueError:
-                     logger.warning(f"Invalid token format {token_from_file} in watchlist for user {user_id}. Skipping.")
-        except json.JSONDecodeError:
-            logger.error(f"Error decoding JSON from watchlist file: {filepath}. Creating empty watchlist.")
-            if os.path.exists(filepath):
-                try:
-                    os.rename(filepath, filepath + ".corrupted_" + str(int(time.time())))
-                    logger.info(f"Renamed corrupted watchlist file for user {user_id} to {filepath}.corrupted_{str(int(time.time()))}")
-                except OSError as e_rename:
-                    logger.error(f"Could not rename corrupted watchlist file {filepath}: {e_rename}")
-            saved_instruments_details = []
-        except Exception as e:
-            logger.error(f"Error loading watchlist for user {user_id}: {e}")
-            return jsonify({"error": "Could not load watchlist"}), 500
-    else:
-        logger.info(f"No watchlist file found for user {user_id} at {filepath}. Returning empty watchlist.")
+    upstox_ws_thread = threading.Thread(target=run_websocket_loop_in_thread, daemon=True)
+    upstox_ws_thread.start()
 
-    return jsonify({"watchlist": saved_instruments_details})
+    emit('upstox_market_data_status', {
+        'status': f'Subscribing to {list(upstox_subscribed_instrument_keys)} via Upstox WebSocket.'
+    })
 
-@app.route('/api/watchlist/save', methods=['POST'])
+@socketio.on('unsubscribe_upstox_market_data')
 @require_login
-def save_watchlist_route():
-    user_id = session.get('user_id')
-    if not user_id:
-        logger.warning("Attempt to save watchlist without user_id in session.")
-        return jsonify({"error": "User ID not found in session"}), 401
+def handle_unsubscribe_upstox_market_data(data):
+    global upstox_ws_thread, upstox_subscribed_instrument_keys
 
-    data = request.get_json()
-    if not data or 'instrument_tokens' not in data or not isinstance(data['instrument_tokens'], list):
-        return jsonify({"error": "Invalid payload. Expected {'instrument_tokens': [list_of_tokens]}"}), 400
-
-    instrument_tokens_to_save = []
-    for t in data['instrument_tokens']:
-        try:
-            instrument_tokens_to_save.append(int(t))
-        except ValueError:
-            logger.warning(f"Invalid token format found in save request for user {user_id}: {t}. Skipping this token.")
-
-    filepath = get_watchlist_filepath(user_id)
-    try:
-        with open(filepath, 'w') as f:
-            json.dump(instrument_tokens_to_save, f)
-        logger.info(f"Watchlist saved for user {user_id} with {len(instrument_tokens_to_save)} tokens.")
-        return jsonify({"status": "success", "count": len(instrument_tokens_to_save)})
-    except Exception as e:
-        logger.error(f"Error saving watchlist for user {user_id}: {e}")
-        return jsonify({"status": "error", "message": "Could not save watchlist"}), 500
-
-@socketio.on('connect_dashboard_ws')
-def handle_connect_dashboard_ws(data):
-    global dashboard_ws_thread, kws_ticker, subscribed_tokens
-    access_token = get_access_token()
-
-    if not access_token or not api_key:
-        logger.warning("Dashboard WS connection attempt without access token or API key.")
-        emit('dashboard_chart_data', {'error': 'User not authenticated or API key missing'})
+    instrument_keys_to_unsubscribe = data.get('instrument_keys', [])
+    if not isinstance(instrument_keys_to_unsubscribe, list):
+        logger.warning("Invalid instrument_keys for Upstox unsubscription.")
         return
 
-    new_desired_tokens = set(data.get('instrument_tokens', []))
-    tokens_explicitly_to_unsubscribe = set(data.get('instrument_tokens_to_unsubscribe', []))
+    logger.info(f"Request to unsubscribe from Upstox market data for: {instrument_keys_to_unsubscribe}")
 
-    logger.info(f"Dashboard WS request: Desired tokens: {new_desired_tokens}, Explicit Unsubscribe: {tokens_explicitly_to_unsubscribe}")
+    made_change = False
+    for key in instrument_keys_to_unsubscribe:
+        if key in upstox_subscribed_instrument_keys:
+            upstox_subscribed_instrument_keys.remove(key)
+            made_change = True
 
-    current_live_subscriptions = set(subscribed_tokens)
-    final_tokens_for_kws = set(current_live_subscriptions)
-
-    if tokens_explicitly_to_unsubscribe:
-        final_tokens_for_kws.difference_update(tokens_explicitly_to_unsubscribe)
-
-    if new_desired_tokens:
-        final_tokens_for_kws = new_desired_tokens
-    elif not tokens_explicitly_to_unsubscribe and not new_desired_tokens and 'instrument_tokens' in data:
-        final_tokens_for_kws.clear()
-
-    tokens_to_add_to_kws = list(final_tokens_for_kws - current_live_subscriptions)
-    tokens_to_remove_from_kws = list(current_live_subscriptions - final_tokens_for_kws)
-
-    if tokens_to_remove_from_kws and kws_ticker and kws_ticker.is_connected():
-        try:
-            kws_ticker.unsubscribe(tokens_to_remove_from_kws)
-            logger.info(f"KWS: Unsubscribed from {tokens_to_remove_from_kws}")
-            for token in tokens_to_remove_from_kws:
-                subscribed_tokens.discard(token)
-        except Exception as e:
-            logger.error(f"KWS: Error unsubscribing: {e}")
-    elif tokens_to_remove_from_kws:
-        for token in tokens_to_remove_from_kws:
-            subscribed_tokens.discard(token)
-        logger.info(f"KWS not connected. Marked {tokens_to_remove_from_kws} for removal from internal state.")
-
-    subscribed_tokens = set(final_tokens_for_kws)
-    logger.info(f"Internal subscribed_tokens updated to: {subscribed_tokens}")
-
-    if not subscribed_tokens:
-        logger.info("No tokens to subscribe to. Stopping KWS if running.")
-        if kws_ticker and kws_ticker.is_connected():
-            kws_ticker.stop()
-        if dashboard_ws_thread and dashboard_ws_thread.is_alive():
-            dashboard_ws_thread.join(timeout=1)
-        kws_ticker = None
-        dashboard_ws_thread = None
-        emit('dashboard_chart_data', {'status': 'Watchlist empty, WebSocket stopped.'})
-        return
-
-    if not kws_ticker or not kws_ticker.is_connected():
-        logger.info("(Re)starting KWS ticker thread.")
-        if kws_ticker:
-            kws_ticker.stop()
-        if dashboard_ws_thread and dashboard_ws_thread.is_alive():
-            dashboard_ws_thread.join(timeout=1)
-
-        kws_ticker = None
-        dashboard_ws_thread = threading.Thread(
-            target=kite_websocket_task,
-            args=(access_token, session.get('kite_public_token'), list(subscribed_tokens)),
-            daemon=True
-        )
-        dashboard_ws_thread.start()
-    elif tokens_to_add_to_kws:
-        try:
-            logger.info(f"KWS connected. Subscribing to additional tokens: {tokens_to_add_to_kws}")
-            kws_ticker.subscribe(tokens_to_add_to_kws)
-            kws_ticker.set_mode(kws_ticker.MODE_FULL, tokens_to_add_to_kws)
-        except Exception as e:
-            logger.error(f"Error subscribing to additional KWS tokens: {e}")
+    if made_change:
+        logger.info(f"Current Upstox subscriptions after unsubscribe: {list(upstox_subscribed_instrument_keys)}")
+        handle_subscribe_upstox_market_data({'instrument_keys': list(upstox_subscribed_instrument_keys)})
     else:
-        logger.info("KWS connected. No new tokens to add, or only unsubscriptions occurred.")
-        emit('dashboard_chart_data', {'status': f'Subscriptions managed. Currently watching {list(subscribed_tokens)}'})
+        logger.info("No changes to Upstox subscriptions.")
 
-@socketio.on('disconnect_dashboard_ws')
-def handle_disconnect_dashboard_ws():
-    global dashboard_ws_thread, kws_ticker, subscribed_tokens
-    logger.info("Request to disconnect Kite WebSocket from client.")
-    if kws_ticker and kws_ticker.is_connected():
-        kws_ticker.stop()
-    kws_ticker = None
-    if dashboard_ws_thread and dashboard_ws_thread.is_alive():
-        dashboard_ws_thread.join(timeout=2)
-    dashboard_ws_thread = None
-    subscribed_tokens = set()
-    emit('dashboard_chart_data', {'status': 'Kite WebSocket disconnected by client request.'})
-
-@socketio.on('connect_order_updates')
-def handle_connect_order_updates():
-    global kws_ticker
-    if not get_access_token():
-        emit('kite_order_update', {'error': 'User not authenticated for order updates'})
-        return
-    if kws_ticker and kws_ticker.is_connected():
-        logger.info("Order Update WS (KiteTicker) is already connected via main dashboard WS.")
-        emit('kite_order_update', {'status': 'Order updates are active via main dashboard WebSocket.'})
-    else:
-        logger.info("Order Update WS (KiteTicker) is not connected. Please connect the main dashboard WebSocket first.")
-        emit('kite_order_update', {'error': 'Main WebSocket not connected. Order updates are handled by it.'})
-
-@socketio.on('disconnect_order_updates')
-def handle_disconnect_order_updates():
-    logger.info("Request to disconnect Order Update WebSocket (handled by main dashboard WS disconnect).")
-    emit('kite_order_update', {'status': 'Order Update WebSocket disconnected (implies main WebSocket disconnected).'})
+    emit('upstox_market_data_status', {
+        'status': f'Current Upstox subscriptions: {list(upstox_subscribed_instrument_keys)}'
+    })
 
 @app.route('/')
 def index():
-    if not get_access_token():
-        return redirect('/login')
-    return redirect('/dashboard')
+    # Check authentication status for both services
+    kite_authenticated = get_access_token() is not None
+    upstox_authenticated = session.get('upstox_authenticated', False)
+
+    # Get profile information to display on the homepage
+    kite_profile = session.get('user_profile')
+    upstox_profile = session.get('upstox_profile')
+
+    # Check if the Upstox token is expired and remove if needed
+    if upstox_authenticated:
+        token_expiry = session.get('upstox_token_expiry')
+        if token_expiry and datetime.fromisoformat(token_expiry) <= datetime.now():
+            # Token is expired, mark as not authenticated
+            session['upstox_authenticated'] = False
+            upstox_authenticated = False
+            logger.info("Upstox token expired, marked as not authenticated")
+
+    # Render the index template with authentication status
+    return render_template(
+        'index.html',
+        kite_authenticated=kite_authenticated,
+        upstox_authenticated=upstox_authenticated,
+        kite_profile=kite_profile,
+        upstox_profile=upstox_profile
+    )
 
 @app.route('/login')
 def login():
@@ -408,9 +358,11 @@ def login():
     if not api_key:
         logger.error("Missing KITE_API_KEY environment variable.")
         return render_template('layout.html', error="API Key not configured. Please check server logs.")
+
     try:
-        kite_login_instance = KiteConnect(api_key=api_key)
-        login_url = kite_login_instance.login_url()
+        # Create a new KiteConnect instance for login
+        kite_login = KiteConnect(api_key=api_key)
+        login_url = kite_login.login_url()
         logger.info(f"Generated Kite login URL: {login_url}")
         return redirect(login_url)
     except Exception as e:
@@ -419,33 +371,40 @@ def login():
 
 @app.route('/callback')
 def callback():
-    request_token = request.args.get('request_token')
-    if not request_token:
-        logger.error("No request token found in callback")
-        return render_template('layout.html', error="No request token received from Kite.")
+    """
+    Route that handles the callback from Kite Connect after user authorization
+    """
     try:
-        kite_session_instance = KiteConnect(api_key=api_key)
-        data = kite_session_instance.generate_session(request_token, api_secret=api_secret)
+        request_token = request.args.get('request_token')
+        if not request_token:
+            logger.error("No request token found in callback")
+            return render_template('layout.html', error="No request token received from Kite.")
 
+        # Create a new KiteConnect instance for generating session
+        kite_session = KiteConnect(api_key=api_key)
+
+        # Generate user session and store it
+        data = kite_session.generate_session(request_token, api_secret=api_secret)
+
+        # Store tokens in session
         session['kite_access_token'] = data['access_token']
         session['kite_public_token'] = data.get('public_token')
-        session['user_id'] = data.get('user_id') # Crucial for watchlist saving
 
-        logger.info(f"Kite session generated for user_id: {data.get('user_id')}. Access token stored.")
+        # Set the access token in kite instance
+        kite_session.set_access_token(data['access_token'])
 
-        # Pre-fetch profile and store in session
+        # Fetch and store user profile
         try:
-            kite_session_instance.set_access_token(data['access_token'])
-            profile = kite_session_instance.profile()
+            profile = kite_session.profile()
             session['user_profile'] = profile
-            logger.info(f"User profile fetched and stored in session for user {data.get('user_id')}")
+            logger.info("User profile fetched and stored in session")
         except Exception as e_profile:
-            logger.error(f"Error fetching profile immediately after login: {str(e_profile)}")
-            # Continue without profile in session for now, can be fetched later
+            logger.error(f"Error fetching profile: {str(e_profile)}")
+            session.pop('user_profile', None)
 
         return redirect('/dashboard')
     except Exception as e:
-        logger.error(f"Error in callback during session generation: {str(e)}")
+        logger.error(f"Error in callback: {str(e)}")
         if hasattr(e, 'response') and getattr(e, 'response') is not None:
             logger.error(f"Kite API error response: {e.response.text}")
         return render_template('layout.html', error=f"Error during authentication: {str(e)}")
@@ -453,83 +412,259 @@ def callback():
 @app.route('/dashboard')
 @require_login
 def dashboard():
-    profile = session.get('user_profile')
-    if not profile:
-        kite = get_kite_instance()
-        if kite:
-            try:
-                profile = kite.profile()
-                session['user_profile'] = profile
-            except Exception as e:
-                logger.error(f"Error fetching profile for dashboard: {str(e)}")
-        else:
-            logger.warning("Could not get Kite instance for dashboard profile fetch.")
-    return render_template('dashboard.html', profile=profile)
+    """
+    Protected dashboard route
+    """
+    try:
+        kite = get_kite_instance() # Original logic attempts to get Kite instance
+
+        profile = session.get('user_profile')
+        if not profile and get_access_token(): # If Kite authenticated but profile missing in session
+            if kite: # Ensure kite object is available
+                try:
+                    profile = kite.profile()
+                    session['user_profile'] = profile
+                    logger.info("Fetched fresh profile data for dashboard")
+                except Exception as e:
+                    logger.error(f"Error fetching profile for dashboard: {str(e)}")
+
+        # Pass relevant profiles to the template.
+        # dashboard.html would ideally be able to use profile (Kite) and/or upstox_profile
+        upstox_profile = session.get('upstox_profile')
+
+        resp = make_response(render_template('dashboard.html', profile=profile, upstox_profile=upstox_profile))
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache' # For HTTP/1.0 proxies
+        resp.headers['Expires'] = '0' # For proxies
+        return resp
+    except Exception as e:
+        logger.error(f"Error accessing dashboard: {str(e)}")
+        session.clear()  # Clear invalid session
+        return redirect('/login_selection') # Changed from /login
 
 @app.route('/profile')
 @require_login
 def user_profile():
-    profile_data = session.get('user_profile')
-    if not profile_data:
+    kite_profile_data = session.get('user_profile')
+    upstox_profile_data = session.get('upstox_profile')
+
+    # Attempt to fetch Kite profile if Kite authenticated and profile not in session
+    if not kite_profile_data and get_access_token(): # get_access_token() checks for kite_access_token
         kite = get_kite_instance()
         if kite:
             try:
-                profile_data = kite.profile()
-                session['user_profile'] = profile_data
+                kite_profile_data = kite.profile()
+                session['user_profile'] = kite_profile_data
             except Exception as e:
-                logger.error(f"Error fetching profile for /profile route: {str(e)}")
-                return render_template('layout.html', error="Could not load profile. Please try logging in again.")
-        else:
-            return redirect('/login')
+                logger.error(f"Error fetching Kite profile for /profile route: {str(e)}")
+                # Profile fetch failed, kite_profile_data remains None or its old value.
+                # The template should handle cases where profile data might be missing.
+                pass
 
-    return render_template('profile.html', profile=profile_data)
+    resp = make_response(render_template('profile.html', profile=kite_profile_data, upstox_profile=upstox_profile_data))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 @app.route('/logout')
 def logout():
-    user_id = session.get('user_id', 'UnknownUser')
-    logger.info(f"User {user_id} logging out. Clearing session.")
     session.clear()
-    # Instead of redirect, render the login page directly
-    return render_template('login.html', error=None)
+    logger.info("User logged out, session cleared.")
+    return redirect('/login_selection') # Changed from /login
 
-@app.route('/market_data')
+# API Routes for Watchlist and Symbol Search
+
+@app.route('/api/watchlist/load')
 @require_login
-def market_data():
-    symbol = request.args.get('symbol')
-    if not symbol:
-        return jsonify({'code': 400, 'message': 'Missing symbol parameter'}), 400
-    kite = get_kite_instance()
-    if not kite:
-        return jsonify({'code': 401, 'message': 'Not authenticated'}), 401
+def load_watchlist():
+    """API endpoint to load a user's watchlist"""
     try:
-        ensure_instruments_cached(kite)
-        instrument = instrument_map_by_symbol.get(symbol)
-        if not instrument:
-            # Try to match by tradingsymbol upper/lower
-            instrument = next((v for k, v in instrument_map_by_symbol.items() if k.lower() == symbol.lower()), None)
-        if not instrument:
-            return jsonify({'code': 404, 'message': f'Symbol {symbol} not found'}), 404
-        # Fetch quote from Kite
-        quote = kite.ltp(f"NSE:{instrument['tradingsymbol']}")
-        ltp_data = quote.get(f"NSE:{instrument['tradingsymbol']}", {})
-        # Compose response
-        return jsonify({
-            'code': 200,
-            'data': {
-                'symbol': instrument['tradingsymbol'],
-                'ltp': ltp_data.get('last_price'),
-                'open': ltp_data.get('ohlc', {}).get('open'),
-                'high': ltp_data.get('ohlc', {}).get('high'),
-                'low': ltp_data.get('ohlc', {}).get('low'),
-                'close': ltp_data.get('ohlc', {}).get('close'),
-                'change': (ltp_data.get('last_price', 0) - ltp_data.get('ohlc', {}).get('close', 0)) if ltp_data.get('last_price') and ltp_data.get('ohlc', {}).get('close') else 0,
-                'percentage_change': ((ltp_data.get('last_price', 0) - ltp_data.get('ohlc', {}).get('close', 0)) / ltp_data.get('ohlc', {}).get('close', 1) * 100) if ltp_data.get('last_price') and ltp_data.get('ohlc', {}).get('close') else 0
-            }
-        })
+        # Use user_id from session or a default if not available
+        user_id = session.get('user_profile', {}).get('user_id', 'default_user')
+
+        watchlist_path = get_watchlist_filepath(user_id)
+
+        if os.path.exists(watchlist_path):
+            with open(watchlist_path, 'r') as f:
+                watchlist_data = json.load(f)
+            logger.info(f"Loaded watchlist for user {user_id}")
+            return jsonify({"success": True, "watchlist": watchlist_data})
+        else:
+            logger.info(f"No existing watchlist found for user {user_id}")
+            return jsonify({"success": True, "watchlist": []})
+
     except Exception as e:
-        logger.error(f"Error fetching market data for {symbol}: {e}")
-        return jsonify({'code': 500, 'message': 'Internal error fetching market data'})
+        logger.error(f"Error loading watchlist: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/watchlist/save', methods=['POST'])
+@require_login
+def save_watchlist():
+    """API endpoint to save a user's watchlist"""
+    try:
+        watchlist_data = request.json.get('watchlist', [])
+
+        # Use user_id from session or a default if not available
+        user_id = session.get('user_profile', {}).get('user_id', 'default_user')
+
+        watchlist_path = get_watchlist_filepath(user_id)
+
+        with open(watchlist_path, 'w') as f:
+            json.dump(watchlist_data, f)
+
+        logger.info(f"Saved watchlist for user {user_id}")
+        return jsonify({"success": True})
+
+    except Exception as e:
+        logger.error(f"Error saving watchlist: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/search-upstox-symbols')
+@require_login
+def search_upstox_symbols():
+    """API endpoint to search Upstox symbols"""
+    try:
+        query = request.args.get('query', '')
+        if not query or len(query) < 2:
+            return jsonify({"success": True, "symbols": []})
+
+        # Get Upstox client
+        upstox_api_client = upstox_service.get_configuration_api_client()
+        if not upstox_api_client:
+            logger.error("Failed to get Upstox ApiClient for symbol search.")
+            return jsonify({"success": False, "error": "Upstox authentication failed"}), 401
+
+        # Search for symbols using Upstox service
+        search_results = upstox_service.search_symbols(upstox_api_client, query)
+
+        return jsonify({"success": True, "symbols": search_results})
+
+    except Exception as e:
+        logger.error(f"Error searching Upstox symbols: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/login_selection')
+def login_selection():
+    """Display login selection page for users to choose between Kite and Upstox"""
+    session.clear()  # Clear any previous session data
+    return render_template('login_selection.html')
+
+@app.route('/login_upstox')
+def login_upstox():
+    """Initiate Upstox login flow based on official documentation"""
+    session.clear()
+
+    if not os.getenv('UPSTOX_API_KEY') or not os.getenv('UPSTOX_API_SECRET'):
+        logger.error("Missing Upstox API credentials in environment variables.")
+        return render_template('layout.html', error="Upstox API credentials not configured. Please check server logs.")
+
+    try:
+        # Generate authorization URL for Upstox OAuth following official documentation
+        redirect_uri = os.getenv('UPSTOX_REDIRECT_URI', 'http://localhost:6010/upstox_callback')
+
+        auth_params = {
+            "client_id": os.getenv('UPSTOX_API_KEY'),
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "orders data_feed"  # Add required scopes as per documentation
+        }
+
+        # Build the authorization URL
+        auth_url = "https://api.upstox.com/v2/login/authorization/dialog"
+        auth_url += "?" + "&".join([f"{key}={value}" for key, value in auth_params.items()])
+
+        logger.info(f"Generated Upstox login URL: {auth_url}")
+        return redirect(auth_url)
+
+    except Exception as e:
+        logger.error(f"Error generating Upstox authorization URL: {str(e)}")
+        return render_template('layout.html', error="Failed to generate Upstox login URL.")
+
+@app.route('/upstox_callback')
+def upstox_callback():
+    """Handle callback from Upstox OAuth flow as per official documentation"""
+    try:
+        # Get the authorization code from the request
+        auth_code = request.args.get('code')
+        if not auth_code:
+            logger.error("No authorization code found in Upstox callback")
+            return render_template('layout.html', error="No authorization code received from Upstox.")
+
+        api_key = os.getenv('UPSTOX_API_KEY')
+        api_secret = os.getenv('UPSTOX_API_SECRET')
+        redirect_uri = os.getenv('UPSTOX_REDIRECT_URI', 'http://localhost:6010/upstox_callback')
+
+        # Exchange the authorization code for an access token per official docs
+        token_url = "https://api.upstox.com/v2/login/authorization/token"
+        token_data = {
+            "code": auth_code,
+            "client_id": api_key,
+            "client_secret": api_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code"
+        }
+
+        response = requests.post(token_url, data=token_data)
+        response.raise_for_status()
+
+        token_response = response.json()
+
+        # Extract and store tokens
+        access_token = token_response.get('access_token')
+        refresh_token = token_response.get('refresh_token')
+        expires_in = token_response.get('expires_in', 86400)  # Default to 24 hours
+
+        if not access_token:
+            logger.error("No access token received from Upstox")
+            return render_template('layout.html', error="Failed to obtain access token from Upstox.")
+
+        # Calculate expiry time
+        expiry_time = datetime.now() + timedelta(seconds=expires_in)
+
+        # Store tokens in session
+        session['upstox_access_token'] = access_token
+        session['upstox_refresh_token'] = refresh_token
+        session['upstox_token_expiry'] = expiry_time.isoformat()
+        session['upstox_authenticated'] = True
+
+        # Also save to file for upstox_service.py to use
+        token_file = os.path.join(os.getcwd(), 'upstox_token.json')
+        with open(token_file, 'w') as f:
+            json.dump({
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'expires_at': expiry_time.isoformat()
+            }, f)
+
+        logger.info("Successfully authenticated with Upstox and saved token")
+
+        # Fetch user profile from Upstox if needed
+        try:
+            # Use the access token to make a request to Upstox Profile API
+            headers = {
+                'Accept': 'application/json',
+                'Api-Version': '2.0',
+                'Authorization': f'Bearer {access_token}'
+            }
+            profile_url = "https://api.upstox.com/v2/user/profile"
+            profile_response = requests.get(profile_url, headers=headers)
+            profile_response.raise_for_status()
+
+            upstox_profile = profile_response.json().get('data', {})
+            session['upstox_profile'] = upstox_profile
+            logger.info("Successfully fetched Upstox user profile")
+        except Exception as e:
+            logger.error(f"Error fetching Upstox user profile: {e}")
+            # Continue even if profile fetch fails
+
+        return redirect('/dashboard')
+
+    except Exception as e:
+        logger.error(f"Error in Upstox callback: {str(e)}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Upstox API error response: {e.response.text}")
+        return render_template('layout.html', error=f"Error during Upstox authentication: {str(e)}")
 
 if __name__ == '__main__':
-    logger.info("Starting PyAlgoKite application...")
-    socketio.run(app, host='0.0.0.0', port=6010, debug=True, use_reloader=False)
+    socketio.run(app, debug=True, host='0.0.0.0')

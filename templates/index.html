@@ -1,0 +1,286 @@
+{% extends "layout.html" %}
+{% block title %}PyalgoKite - Homepage{% endblock %}
+{% block head %}
+    {{ super() }}
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .status-container {
+            max-width: 900px; /* Can be adjusted, e.g., 1000px or 1100px for wider panels */
+            margin: 30px auto;
+            padding: 20px;
+        }
+        .platform-header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+        .platform-header h1 {
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .platform-header p {
+            font-size: 1.1rem;
+            color: #666;
+        }
+        .broker-panels-container { /* Renamed from status-grid */
+            display: flex;
+            flex-wrap: wrap; /* Allow panels to wrap */
+            gap: 20px; /* Space between panels */
+            margin-bottom: 30px;
+        }
+        .broker-panel { /* Renamed from status-card */
+            border: 1px solid #e0e0e0; /* More defined border */
+            border-radius: 8px; /* Slightly less rounded */
+            padding: 20px;
+            background: white; /* Panel background */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05); /* Softer shadow */
+            flex: 1; /* Distribute space */
+            min-width: 360px; /* Minimum width before wrapping, adjust as needed */
+            /* Removed transform and aggressive shadow on hover from original status-card */
+        }
+        /* .broker-panel:hover { */
+            /* Optional: Add a subtle hover effect if desired, e.g., border color change */
+            /* border-color: #c0c0c0; */
+        /* } */
+        .card-header { /* Style for the header within each panel */
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 12px;
+            position: relative;
+        }
+        .status-connected {
+            background-color: #28a745;
+            box-shadow: 0 0 0 4px rgba(40, 167, 69, 0.2);
+            animation: pulse-green 2s infinite;
+        }
+        .status-disconnected {
+            background-color: #dc3545;
+            box-shadow: 0 0 0 4px rgba(220, 53, 69, 0.2);
+        }
+        @keyframes pulse-green {
+            0% {
+                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 8px rgba(40, 167, 69, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
+            }
+        }
+        .broker-logo {
+            width: 24px;
+            height: 24px;
+            margin-right: 10px;
+        }
+        .card-header h2 {
+            font-size: 1.5rem;
+            margin: 0;
+            color: #444;
+            font-weight: 600;
+        }
+        .status-message {
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+        }
+        .status-message strong {
+            color: #28a745;
+        }
+        .status-message strong.disconnected {
+            color: #dc3545;
+        }
+        .profile-info {
+            background-color: #f8f9fa; /* Light background for profile section inside panel */
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            font-size: 0.9rem;
+        }
+        .profile-info p {
+            margin: 8px 0;
+            display: flex;
+            align-items: center;
+        }
+        .profile-info i {
+            margin-right: 10px;
+            width: 16px;
+            color: #666;
+        }
+        .actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 20px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 500;
+            text-align: center;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            flex: 1; /* Buttons take equal width in their container */
+        }
+        .btn-primary {
+            background-color: #0062cc;
+            color: white;
+            box-shadow: 0 2px 5px rgba(0, 98, 204, 0.3);
+        }
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+            box-shadow: 0 2px 5px rgba(108, 117, 125, 0.3);
+        }
+        .btn-success {
+            background-color: #28a745;
+            color: white;
+            box-shadow: 0 2px 5px rgba(40, 167, 69, 0.3);
+        }
+        .btn-primary:hover, .btn-secondary:hover, .btn-success:hover {
+            transform: translateY(-2px); /* Keep subtle hover for buttons */
+        }
+        .btn-primary:hover {
+            background-color: #0056b3;
+            box-shadow: 0 4px 8px rgba(0, 98, 204, 0.4);
+        }
+        .btn-secondary:hover {
+            background-color: #5a6268;
+            box-shadow: 0 4px 8px rgba(108, 117, 125, 0.4);
+        }
+        .btn-success:hover {
+            background-color: #218838;
+            box-shadow: 0 4px 8px rgba(40, 167, 69, 0.4);
+        }
+        .bottom-actions {
+            text-align: center;
+            margin-top: 30px;
+        }
+        .bottom-actions .btn {
+            display: inline-block; /* Overrides flex:1 for bottom buttons if needed */
+            padding: 14px 30px;
+            font-size: 1.1rem;
+            min-width: 200px;
+            flex: none; /* Ensure bottom buttons don't flex if they are single */
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 30px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        .badge-connected {
+            background-color: rgba(40, 167, 69, 0.15);
+            color: #28a745;
+        }
+        .badge-disconnected {
+            background-color: rgba(220, 53, 69, 0.15);
+            color: #dc3545;
+        }
+    </style>
+    <!-- Add FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+{% endblock %}
+
+{% block content %}
+<div class="status-container">
+    <div class="platform-header">
+        <h1>PyalgoKite Trading Platform</h1>
+        <p>Connect to your brokers and start algorithmic trading</p>
+    </div>
+
+    <div class="broker-panels-container"> <!-- Ensure this class is used -->
+        <div class="broker-panel"> <!-- Ensure this class is used -->
+            <div class="card-header">
+                <span class="status-indicator {% if kite_authenticated %}status-connected{% else %}status-disconnected{% endif %}"></span>
+                <i class="fas fa-chart-line broker-logo"></i>
+                <h2>Zerodha / Kite</h2>
+                <span class="status-badge {% if kite_authenticated %}badge-connected{% else %}badge-disconnected{% endif %}">
+                    {% if kite_authenticated %}CONNECTED{% else %}DISCONNECTED{% endif %}
+                </span>
+            </div>
+
+            {% if kite_authenticated %}
+                <div class="status-message">
+                    <strong>Connected</strong> - Successfully authenticated with Zerodha
+                </div>
+                {% if kite_profile %}
+                    <div class="profile-info">
+                        <p><i class="fas fa-user"></i> <strong>User:</strong> {{ kite_profile.user_name }}</p>
+                        <p><i class="fas fa-envelope"></i> <strong>Email:</strong> {{ kite_profile.email }}</p>
+                        <p><i class="fas fa-id-card"></i> <strong>User ID:</strong> {{ kite_profile.user_id }}</p>
+                    </div>
+                {% endif %}
+                <div class="actions">
+                    <a href="/dashboard" class="btn btn-success"><i class="fas fa-tachometer-alt"></i> Go to Dashboard</a>
+                    <a href="/logout" class="btn btn-secondary"><i class="fas fa-sign-out-alt"></i> Logout</a>
+                </div>
+            {% else %}
+                <div class="status-message">
+                    <strong class="disconnected">Disconnected</strong> - You need to authenticate with Zerodha
+                </div>
+                <div class="actions">
+                    <a href="/login" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login with Zerodha</a>
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="broker-panel"> <!-- Ensure this class is used -->
+            <div class="card-header">
+                <span class="status-indicator {% if upstox_authenticated %}status-connected{% else %}status-disconnected{% endif %}"></span>
+                <i class="fas fa-chart-bar broker-logo"></i>
+                <h2>Upstox</h2>
+                <span class="status-badge {% if upstox_authenticated %}badge-connected{% else %}badge-disconnected{% endif %}">
+                    {% if upstox_authenticated %}CONNECTED{% else %}DISCONNECTED{% endif %}
+                </span>
+            </div>
+
+            {% if upstox_authenticated %}
+                <div class="status-message">
+                    <strong>Connected</strong> - Successfully authenticated with Upstox
+                </div>
+                {% if upstox_profile %}
+                    <div class="profile-info">
+                        <p><i class="fas fa-user"></i> <strong>User:</strong> {{ upstox_profile.name }}</p>
+                        <p><i class="fas fa-envelope"></i> <strong>Email:</strong> {{ upstox_profile.email }}</p>
+                        <p><i class="fas fa-id-card"></i> <strong>Client ID:</strong> {{ upstox_profile.client_id }}</p>
+                    </div>
+                {% endif %}
+                <div class="actions">
+                    <a href="/dashboard" class="btn btn-success"><i class="fas fa-tachometer-alt"></i> Go to Dashboard</a>
+                    <a href="/logout" class="btn btn-secondary"><i class="fas fa-sign-out-alt"></i> Logout</a>
+                </div>
+            {% else %}
+                <div class="status-message">
+                    <strong class="disconnected">Disconnected</strong> - You need to authenticate with Upstox
+                </div>
+                <div class="actions">
+                    <a href="/login_upstox" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login with Upstox</a>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="bottom-actions">
+        {% if kite_authenticated or upstox_authenticated %}
+            <a href="/dashboard" class="btn btn-success"><i class="fas fa-tachometer-alt"></i> Go to Dashboard</a>
+        {% else %}
+            <a href="/login_selection" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login Options</a>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
