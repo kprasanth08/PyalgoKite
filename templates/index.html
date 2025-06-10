@@ -1,195 +1,152 @@
 {% extends "layout.html" %}
 {% block title %}PyalgoKite - Homepage{% endblock %}
-{% block head %}
-    {{ super() }}
+{% block extra_head %}
     <style>
-        body {
-            background-color: #f8f9fa;
-        }
-        .status-container {
-            max-width: 900px; /* Can be adjusted, e.g., 1000px or 1100px for wider panels */
-            margin: 30px auto;
-            padding: 20px;
-        }
-        .platform-header {
-            text-align: center;
-            margin-bottom: 30px;
-            color: #333;
-        }
-        .platform-header h1 {
-            font-weight: 700;
-            margin-bottom: 10px;
-        }
-        .platform-header p {
-            font-size: 1.1rem;
-            color: #666;
-        }
-        .broker-panels-container { /* Renamed from status-grid */
+        .login-panels-container {
             display: flex;
-            flex-wrap: wrap; /* Allow panels to wrap */
-            gap: 20px; /* Space between panels */
-            margin-bottom: 30px;
+            flex-wrap: wrap;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            justify-content: center;
         }
-        .broker-panel { /* Renamed from status-card */
-            border: 1px solid #e0e0e0; /* More defined border */
-            border-radius: 8px; /* Slightly less rounded */
-            padding: 20px;
-            background: white; /* Panel background */
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05); /* Softer shadow */
-            flex: 1; /* Distribute space */
-            min-width: 360px; /* Minimum width before wrapping, adjust as needed */
-            /* Removed transform and aggressive shadow on hover from original status-card */
+        .login-panel {
+            border: 1px solid rgba(75, 85, 99, 0.4);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            background-color: rgba(31, 41, 55, 0.8);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            flex: 1;
+            min-width: 320px;
+            max-width: 450px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
         }
-        /* .broker-panel:hover { */
-            /* Optional: Add a subtle hover effect if desired, e.g., border color change */
-            /* border-color: #c0c0c0; */
-        /* } */
-        .card-header { /* Style for the header within each panel */
+        .login-panel:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+        }
+        .login-panel::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+        }
+        .kite-panel::before {
+            background: #3B82F6;
+        }
+        .upstox-panel::before {
+            background: #10B981;
+        }
+        .panel-header {
             display: flex;
             align-items: center;
-            margin-bottom: 15px;
-            padding-bottom: 15px;
-            border-bottom: 1px solid #f0f0f0;
-        }
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 12px;
-            position: relative;
-        }
-        .status-connected {
-            background-color: #28a745;
-            box-shadow: 0 0 0 4px rgba(40, 167, 69, 0.2);
-            animation: pulse-green 2s infinite;
-        }
-        .status-disconnected {
-            background-color: #dc3545;
-            box-shadow: 0 0 0 4px rgba(220, 53, 69, 0.2);
-        }
-        @keyframes pulse-green {
-            0% {
-                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.4);
-            }
-            70% {
-                box-shadow: 0 0 0 8px rgba(40, 167, 69, 0);
-            }
-            100% {
-                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
-            }
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(75, 85, 99, 0.3);
         }
         .broker-logo {
-            width: 24px;
-            height: 24px;
-            margin-right: 10px;
+            width: 2.5rem;
+            height: 2.5rem;
+            margin-right: 0.875rem;
+            padding: 0.5rem;
+            border-radius: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
         }
-        .card-header h2 {
-            font-size: 1.5rem;
-            margin: 0;
-            color: #444;
+        .kite-logo {
+            background-color: rgba(59, 130, 246, 0.2);
+            color: #3B82F6;
+        }
+        .upstox-logo {
+            background-color: rgba(16, 185, 129, 0.2);
+            color: #10B981;
+        }
+        .panel-description {
+            color: #9CA3AF;
+            margin-bottom: 1.25rem;
+            line-height: 1.5;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.625rem;
+            border-radius: 1.5rem;
+            font-size: 0.75rem;
             font-weight: 600;
+            margin-left: auto;
         }
-        .status-message {
-            font-size: 1.1rem;
-            margin-bottom: 20px;
+        .badge-connected {
+            background-color: rgba(16, 185, 129, 0.2);
+            color: #10B981;
         }
-        .status-message strong {
-            color: #28a745;
-        }
-        .status-message strong.disconnected {
-            color: #dc3545;
+        .badge-disconnected {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: #EF4444;
         }
         .profile-info {
-            background-color: #f8f9fa; /* Light background for profile section inside panel */
-            border-radius: 8px;
-            padding: 15px;
-            margin: 15px 0;
-            font-size: 0.9rem;
+            background-color: rgba(31, 41, 55, 0.5);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin: 1rem 0;
         }
         .profile-info p {
-            margin: 8px 0;
+            margin: 0.5rem 0;
             display: flex;
             align-items: center;
         }
         .profile-info i {
-            margin-right: 10px;
-            width: 16px;
-            color: #666;
+            margin-right: 0.625rem;
+            width: 1rem;
+            color: #9CA3AF;
         }
-        .actions {
-            margin-top: 20px;
-            display: flex;
-            gap: 10px;
+        .kite-btn {
+            background-color: #3B82F6;
+            color: white;
         }
-        .btn {
+        .kite-btn:hover {
+            background-color: #2563EB;
+        }
+        .upstox-btn {
+            background-color: #10B981;
+            color: white;
+        }
+        .upstox-btn:hover {
+            background-color: #059669;
+        }
+        .platform-title {
+            background: linear-gradient(90deg, #3B82F6, #10B981);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
             display: inline-block;
-            padding: 12px 20px;
-            border-radius: 6px;
-            text-decoration: none;
-            font-weight: 500;
-            text-align: center;
-            transition: all 0.3s ease;
-            border: none;
-            cursor: pointer;
-            flex: 1; /* Buttons take equal width in their container */
         }
-        .btn-primary {
-            background-color: #0062cc;
-            color: white;
-            box-shadow: 0 2px 5px rgba(0, 98, 204, 0.3);
+        @keyframes pulse-green {
+            0% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            }
+            70% {
+                box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+            }
         }
-        .btn-secondary {
-            background-color: #6c757d;
-            color: white;
-            box-shadow: 0 2px 5px rgba(108, 117, 125, 0.3);
-        }
-        .btn-success {
-            background-color: #28a745;
-            color: white;
-            box-shadow: 0 2px 5px rgba(40, 167, 69, 0.3);
-        }
-        .btn-primary:hover, .btn-secondary:hover, .btn-success:hover {
-            transform: translateY(-2px); /* Keep subtle hover for buttons */
-        }
-        .btn-primary:hover {
-            background-color: #0056b3;
-            box-shadow: 0 4px 8px rgba(0, 98, 204, 0.4);
-        }
-        .btn-secondary:hover {
-            background-color: #5a6268;
-            box-shadow: 0 4px 8px rgba(108, 117, 125, 0.4);
-        }
-        .btn-success:hover {
-            background-color: #218838;
-            box-shadow: 0 4px 8px rgba(40, 167, 69, 0.4);
-        }
-        .bottom-actions {
-            text-align: center;
-            margin-top: 30px;
-        }
-        .bottom-actions .btn {
-            display: inline-block; /* Overrides flex:1 for bottom buttons if needed */
-            padding: 14px 30px;
-            font-size: 1.1rem;
-            min-width: 200px;
-            flex: none; /* Ensure bottom buttons don't flex if they are single */
-        }
-        .status-badge {
+        .status-indicator {
             display: inline-block;
-            padding: 4px 10px;
-            border-radius: 30px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            margin-left: 10px;
+            width: 0.75rem;
+            height: 0.75rem;
+            border-radius: 50%;
+            margin-right: 0.75rem;
         }
-        .badge-connected {
-            background-color: rgba(40, 167, 69, 0.15);
-            color: #28a745;
+        .status-connected {
+            background-color: #10B981;
+            animation: pulse-green 2s infinite;
         }
-        .badge-disconnected {
-            background-color: rgba(220, 53, 69, 0.15);
-            color: #dc3545;
+        .status-disconnected {
+            background-color: #EF4444;
         }
     </style>
     <!-- Add FontAwesome for icons -->
@@ -197,89 +154,111 @@
 {% endblock %}
 
 {% block content %}
-<div class="status-container">
-    <div class="platform-header">
-        <h1>PyalgoKite Trading Platform</h1>
-        <p>Connect to your brokers and start algorithmic trading</p>
+<div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+        <h1 class="text-3xl font-bold mb-2 platform-title">PyalgoKite Trading Platform</h1>
+        <p class="text-gray-400">Connect to your preferred broker and start algorithmic trading</p>
     </div>
 
-    <div class="broker-panels-container"> <!-- Ensure this class is used -->
-        <div class="broker-panel"> <!-- Ensure this class is used -->
-            <div class="card-header">
-                <span class="status-indicator {% if kite_authenticated %}status-connected{% else %}status-disconnected{% endif %}"></span>
-                <i class="fas fa-chart-line broker-logo"></i>
-                <h2>Zerodha / Kite</h2>
+    <div class="login-panels-container">
+        <!-- Kite Panel -->
+        <div class="login-panel kite-panel">
+            <div class="panel-header">
+                <div class="broker-logo kite-logo">
+                    <i class="fas fa-chart-line"></i>
+                </div>
+                <h2 class="text-xl font-semibold text-blue-400">Zerodha Kite</h2>
                 <span class="status-badge {% if kite_authenticated %}badge-connected{% else %}badge-disconnected{% endif %}">
                     {% if kite_authenticated %}CONNECTED{% else %}DISCONNECTED{% endif %}
                 </span>
             </div>
 
+            <p class="panel-description">
+                Connect to Zerodha's Kite platform for real-time market data, portfolio management, and algorithmic trading.
+            </p>
+
             {% if kite_authenticated %}
-                <div class="status-message">
-                    <strong>Connected</strong> - Successfully authenticated with Zerodha
+                <div class="mb-4 text-green-400 font-medium">
+                    <i class="fas fa-check-circle mr-2"></i> Successfully authenticated with Zerodha
                 </div>
                 {% if kite_profile %}
                     <div class="profile-info">
-                        <p><i class="fas fa-user"></i> <strong>User:</strong> {{ kite_profile.user_name }}</p>
-                        <p><i class="fas fa-envelope"></i> <strong>Email:</strong> {{ kite_profile.email }}</p>
-                        <p><i class="fas fa-id-card"></i> <strong>User ID:</strong> {{ kite_profile.user_id }}</p>
+                        <p><i class="fas fa-user"></i> <span class="font-medium">User:</span> {{ kite_profile.user_name }}</p>
+                        <p><i class="fas fa-envelope"></i> <span class="font-medium">Email:</span> {{ kite_profile.email }}</p>
+                        <p><i class="fas fa-id-card"></i> <span class="font-medium">User ID:</span> {{ kite_profile.user_id }}</p>
                     </div>
                 {% endif %}
-                <div class="actions">
-                    <a href="/dashboard" class="btn btn-success"><i class="fas fa-tachometer-alt"></i> Go to Dashboard</a>
-                    <a href="/logout" class="btn btn-secondary"><i class="fas fa-sign-out-alt"></i> Logout</a>
+                <div class="flex gap-4 mt-5">
+                    <a href="/dashboard" class="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded-md text-center transition-all">
+                        <i class="fas fa-tachometer-alt mr-2"></i> Go to Dashboard
+                    </a>
+                    <a href="/logout" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md text-center transition-all">
+                        <i class="fas fa-sign-out-alt mr-2"></i> Logout
+                    </a>
                 </div>
             {% else %}
-                <div class="status-message">
-                    <strong class="disconnected">Disconnected</strong> - You need to authenticate with Zerodha
+                <div class="mb-4 text-red-400 font-medium">
+                    <i class="fas fa-exclamation-circle mr-2"></i> You need to authenticate with Zerodha
                 </div>
-                <div class="actions">
-                    <a href="/login" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login with Zerodha</a>
-                </div>
+                <a href="/login" class="kite-btn block text-center py-3 px-4 rounded-md font-medium transition-all hover:shadow-lg">
+                    <i class="fas fa-sign-in-alt mr-2"></i> Login with Zerodha
+                </a>
             {% endif %}
         </div>
 
-        <div class="broker-panel"> <!-- Ensure this class is used -->
-            <div class="card-header">
-                <span class="status-indicator {% if upstox_authenticated %}status-connected{% else %}status-disconnected{% endif %}"></span>
-                <i class="fas fa-chart-bar broker-logo"></i>
-                <h2>Upstox</h2>
+        <!-- Upstox Panel -->
+        <div class="login-panel upstox-panel">
+            <div class="panel-header">
+                <div class="broker-logo upstox-logo">
+                    <i class="fas fa-chart-bar"></i>
+                </div>
+                <h2 class="text-xl font-semibold text-green-400">Upstox</h2>
                 <span class="status-badge {% if upstox_authenticated %}badge-connected{% else %}badge-disconnected{% endif %}">
                     {% if upstox_authenticated %}CONNECTED{% else %}DISCONNECTED{% endif %}
                 </span>
             </div>
 
+            <p class="panel-description">
+                Connect to Upstox for advanced trading features, diverse market access, and seamless integration with your algorithmic strategies.
+            </p>
+
             {% if upstox_authenticated %}
-                <div class="status-message">
-                    <strong>Connected</strong> - Successfully authenticated with Upstox
+                <div class="mb-4 text-green-400 font-medium">
+                    <i class="fas fa-check-circle mr-2"></i> Successfully authenticated with Upstox
                 </div>
                 {% if upstox_profile %}
                     <div class="profile-info">
-                        <p><i class="fas fa-user"></i> <strong>User:</strong> {{ upstox_profile.name }}</p>
-                        <p><i class="fas fa-envelope"></i> <strong>Email:</strong> {{ upstox_profile.email }}</p>
-                        <p><i class="fas fa-id-card"></i> <strong>Client ID:</strong> {{ upstox_profile.client_id }}</p>
+                        <p><i class="fas fa-user"></i> <span class="font-medium">User:</span> {{ upstox_profile.name }}</p>
+                        <p><i class="fas fa-envelope"></i> <span class="font-medium">Email:</span> {{ upstox_profile.email }}</p>
+                        <p><i class="fas fa-id-card"></i> <span class="font-medium">Client ID:</span> {{ upstox_profile.client_id }}</p>
                     </div>
                 {% endif %}
-                <div class="actions">
-                    <a href="/dashboard" class="btn btn-success"><i class="fas fa-tachometer-alt"></i> Go to Dashboard</a>
-                    <a href="/logout" class="btn btn-secondary"><i class="fas fa-sign-out-alt"></i> Logout</a>
+                <div class="flex gap-4 mt-5">
+                    <a href="/dashboard" class="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded-md text-center transition-all">
+                        <i class="fas fa-tachometer-alt mr-2"></i> Go to Dashboard
+                    </a>
+                    <a href="/logout" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md text-center transition-all">
+                        <i class="fas fa-sign-out-alt mr-2"></i> Logout
+                    </a>
                 </div>
             {% else %}
-                <div class="status-message">
-                    <strong class="disconnected">Disconnected</strong> - You need to authenticate with Upstox
+                <div class="mb-4 text-red-400 font-medium">
+                    <i class="fas fa-exclamation-circle mr-2"></i> You need to authenticate with Upstox
                 </div>
-                <div class="actions">
-                    <a href="/login_upstox" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login with Upstox</a>
-                </div>
+                <a href="/login_upstox" class="upstox-btn block text-center py-3 px-4 rounded-md font-medium transition-all hover:shadow-lg">
+                    <i class="fas fa-sign-in-alt mr-2"></i> Login with Upstox
+                </a>
             {% endif %}
         </div>
     </div>
 
-    <div class="bottom-actions">
+    <div class="text-center mt-8">
         {% if kite_authenticated or upstox_authenticated %}
-            <a href="/dashboard" class="btn btn-success"><i class="fas fa-tachometer-alt"></i> Go to Dashboard</a>
+            <a href="/dashboard" class="inline-block bg-green-600 hover:bg-green-700 text-white py-3 px-8 rounded-md font-medium transition-all text-lg">
+                <i class="fas fa-tachometer-alt mr-2"></i> Go to Trading Dashboard
+            </a>
         {% else %}
-            <a href="/login_selection" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login Options</a>
+            <p class="text-gray-400 mb-4">Select your preferred trading platform to get started</p>
         {% endif %}
     </div>
 </div>
