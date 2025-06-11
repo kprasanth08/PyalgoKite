@@ -342,6 +342,25 @@ def index():
             session['upstox_authenticated'] = False
             upstox_authenticated = False
             logger.info("Upstox token expired, marked as not authenticated")
+        else:
+            # If authenticated but profile is missing, try to get it again
+            if not upstox_profile and session.get('upstox_access_token'):
+                try:
+                    # Use the access token to fetch profile
+                    headers = {
+                        'Accept': 'application/json',
+                        'Api-Version': '2.0',
+                        'Authorization': f'Bearer {session["upstox_access_token"]}'
+                    }
+                    profile_url = "https://api.upstox.com/v2/user/profile"
+                    profile_response = requests.get(profile_url, headers=headers)
+                    profile_response.raise_for_status()
+
+                    upstox_profile = profile_response.json().get('data', {})
+                    session['upstox_profile'] = upstox_profile
+                    logger.info("Successfully retrieved missing Upstox user profile")
+                except Exception as e:
+                    logger.error(f"Error fetching Upstox user profile: {e}")
 
     # Render the index template with authentication status
     return render_template(
@@ -354,7 +373,22 @@ def index():
 
 @app.route('/login')
 def login():
+    # Save Upstox authentication data if it exists
+    upstox_authenticated = session.get('upstox_authenticated', False)
+    upstox_access_token = session.get('upstox_access_token')
+    upstox_profile = session.get('upstox_profile')
+    upstox_token_expiry = session.get('upstox_token_expiry')
+
+    # Clear session but keep Upstox data if authenticated
     session.clear()
+
+    # Restore Upstox authentication data if it was present
+    if upstox_authenticated:
+        session['upstox_authenticated'] = upstox_authenticated
+        session['upstox_access_token'] = upstox_access_token
+        session['upstox_profile'] = upstox_profile
+        session['upstox_token_expiry'] = upstox_token_expiry
+
     if not api_key:
         logger.error("Missing KITE_API_KEY environment variable.")
         return render_template('layout.html', error="API Key not configured. Please check server logs.")
@@ -547,7 +581,19 @@ def search_upstox_symbols():
 @app.route('/login_upstox')
 def login_upstox():
     """Initiate Upstox login flow based on official documentation"""
+    # Save Zerodha (Kite) authentication data if it exists
+    kite_access_token = session.get('kite_access_token')
+    kite_public_token = session.get('kite_public_token')
+    user_profile = session.get('user_profile')
+
+    # Clear session but keep Zerodha data if authenticated
     session.clear()
+
+    # Restore Zerodha authentication data if it was present
+    if kite_access_token:
+        session['kite_access_token'] = kite_access_token
+        session['kite_public_token'] = kite_public_token
+        session['user_profile'] = user_profile
 
     if not os.getenv('UPSTOX_API_KEY') or not os.getenv('UPSTOX_API_SECRET'):
         logger.error("Missing Upstox API credentials in environment variables.")
@@ -579,6 +625,11 @@ def login_upstox():
 def upstox_callback():
     """Handle callback from Upstox OAuth flow as per official documentation"""
     try:
+        # Save Zerodha (Kite) authentication data if it exists
+        kite_access_token = session.get('kite_access_token')
+        kite_public_token = session.get('kite_public_token')
+        user_profile = session.get('user_profile')
+
         # Get the authorization code from the request
         auth_code = request.args.get('code')
         if not auth_code:
@@ -616,7 +667,12 @@ def upstox_callback():
         # Calculate expiry time
         expiry_time = datetime.now() + timedelta(seconds=expires_in)
 
-        # Store tokens in session
+        # Store tokens in session while preserving Kite data
+        if kite_access_token:
+            session['kite_access_token'] = kite_access_token
+            session['kite_public_token'] = kite_public_token
+            session['user_profile'] = user_profile
+
         session['upstox_access_token'] = access_token
         session['upstox_refresh_token'] = refresh_token
         session['upstox_token_expiry'] = expiry_time.isoformat()

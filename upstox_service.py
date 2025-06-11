@@ -388,4 +388,199 @@ def get_live_market_data(symbol, exchange="NSE_EQ"):
         logger.error(f"Error fetching live market data for {symbol} via HTTP: {e}", exc_info=True)
         return None
 
-# The rest of the existing code remains unchanged.
+
+def get_historical_data(symbol, interval="1day", from_date=None, to_date=None, exchange="NSE_EQ"):
+    """
+    Get historical OHLC data for a symbol from Upstox using V3 API
+
+    Args:
+        symbol (str): Symbol/scrip code
+        interval (str): Candle interval (V3 API format: 1minute, 1day, 1week, 1month)
+        from_date (str): Start date in YYYY-MM-DD format
+        to_date (str): End date in YYYY-MM-DD format
+        exchange (str): Exchange code, default is NSE_EQ
+    """
+    history_api = get_history_v3_api()
+    if not history_api:
+        logger.error("Failed to create HistoryV3Api instance")
+        return None
+
+    # Map the interval format from old API to new V3 API if needed
+    interval_mapping = {
+        "minute": "1minute",
+        "day": "1day",
+        "week": "1week",
+        "month": "1month"
+    }
+
+    # Use the mapping if an old-style interval is provided
+    if interval in interval_mapping:
+        interval = interval_mapping[interval]
+
+    try:
+        # Format instrument key for Upstox API V3
+        instrument_key = f"{exchange}:{symbol}"
+
+        # Default to last 30 days if no dates provided
+        if not from_date or not to_date:
+            to_date = datetime.now().strftime("%Y-%m-%d")
+            from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        # Get historical data
+        response = history_api.get_candle_data(
+            symbol=instrument_key,
+            interval=interval,
+            from_date=from_date,
+            to_date=to_date,
+            api_version="3.0"
+        )
+
+        return response.data.candles if response and response.data else None
+    except ApiException as e:
+        logger.error(f"Exception when calling HistoryV3Api->get_candle_data: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching historical data from Upstox for {symbol}: {e}")
+        return None
+def get_auth_code_from_url(redirect_url):
+    """
+    Extract the authorization code from the redirect URL
+    For use with the redirect callback
+    """
+    try:
+        import urllib.parse
+        parsed_url = urllib.parse.urlparse(redirect_url)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+
+        if 'code' in query_params:
+            return query_params['code'][0]
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting auth code from URL: {str(e)}")
+        return None
+
+def get_instruments_cache(exchange="NSE_EQ"):
+    """
+    Get instruments cache for the specified exchange.
+    Loads from processed JSON file if available.
+
+    Args:
+        exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
+
+    Returns:
+        list: List of instruments for the specified exchange
+    """
+    global _instruments_cache
+
+    # Check if cache is already loaded
+    if _instruments_cache.get(exchange) is not None:
+        return _instruments_cache[exchange]
+
+    # Load from processed JSON file
+    try:
+        if exchange == "NSE_EQ":
+            cache_file = NSE_CSV_PROCESSED_PATH
+        else:
+            # Currently only supporting NSE_EQ
+            logger.warning(f"Instruments cache not implemented for exchange: {exchange}")
+            return []
+
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as f:
+                instruments = json.load(f)
+
+            # Store in memory cache
+            _instruments_cache[exchange] = instruments
+            _instruments_cache["last_updated"] = datetime.now().isoformat()
+
+            logger.info(f"Loaded {len(instruments)} instruments for {exchange} from cache")
+            return instruments
+        else:
+            logger.warning(f"Instruments cache file not found: {cache_file}")
+            return []
+    except Exception as e:
+        logger.error(f"Error loading instruments cache for {exchange}: {str(e)}")
+        return []
+
+def search_instruments(query, exchange="NSE_EQ"):
+    """
+    Search for instruments based on a query string using Upstox OHLC V3 API
+
+    Args:
+        query (str): Search query string (symbol or name)
+        exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
+
+    Returns:
+        list: List of matching instruments
+    """
+    try:
+        # Get the access token for authorization
+        token = get_access_token()
+        if not token:
+            logger.error("Failed to get access token for instrument search")
+            return []
+
+        # Get processed instruments cache
+        instruments = get_instruments_cache(exchange)
+        if not instruments:
+            logger.error(f"No instruments available for exchange {exchange}")
+            return []
+
+        # Perform a case-insensitive search on both symbol and name
+        query = query.upper()
+        results = []
+
+        for inst in instruments:
+            # Check if the query matches the symbol or name
+            symbol = inst.get('symbol', '').upper()
+            name = inst.get('name', '').upper()
+
+            if query in symbol or query in name:
+                results.append(inst)
+
+                # Limit results to a reasonable number
+                if len(results) >= 20:
+                    break
+
+        return results
+    except Exception as e:
+        logger.error(f"Error searching instruments: {str(e)}")
+        return []
+def search_symbols(api_client, query, exchange="NSE_EQ"):
+    """
+    Search for symbols using the API client
+
+    Args:
+        api_client: Configured Upstox API client
+        query (str): Search query string (symbol or name)
+        exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
+
+    Returns:
+        list: List of matching symbols with formatted data for frontend
+    """
+    try:
+        # First try to search using existing instruments cache
+        results = search_instruments(query, exchange)
+
+        # Format the results for frontend display
+        formatted_results = []
+
+        for inst in results:
+            symbol = inst.get('symbol', '')
+            name = inst.get('name', '')
+            instrument_key = inst.get('instrument_key', '')
+            isin = inst.get('isin', '')
+
+            if symbol and instrument_key:
+                formatted_results.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "instrument_key": instrument_key,
+                    "isin": isin,
+                    "exchange": exchange
+                })
+
+        return formatted_results
+    except Exception as e:
+        logger.error(f"Error in search_symbols: {str(e)}")
+        return []
