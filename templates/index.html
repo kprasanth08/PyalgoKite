@@ -237,9 +237,10 @@
                 </div>
                 {% if upstox_profile %}
                     <div class="profile-info">
-                        <p><i class="fas fa-user"></i> <span class="font-medium">User:</span> {{ upstox_profile.name }}</p>
+                        <p><i class="fas fa-user"></i> <span class="font-medium">User:</span> {{ upstox_profile.user_name }}</p>
                         <p><i class="fas fa-envelope"></i> <span class="font-medium">Email:</span> {{ upstox_profile.email }}</p>
-                        <p><i class="fas fa-id-card"></i> <span class="font-medium">Client ID:</span> {{ upstox_profile.client_id }}</p>
+                        <p><i class="fas fa-id-card"></i> <span class="font-medium">User ID:</span> {{ upstox_profile.user_id }}</p>
+                        <p><i class="fas fa-building"></i> <span class="font-medium">Client ID:</span> {{ upstox_profile.client_id }}</p>
                     </div>
                 {% endif %}
                 <div class="flex gap-4 mt-5">

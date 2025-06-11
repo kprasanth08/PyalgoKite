@@ -5,10 +5,13 @@
     <h1 class="text-3xl font-bold mb-8 text-center md:text-left text-gray-50">User Profile</h1>
 
     {% if profile %}
-    <div class="bg-gray-700 p-6 rounded-lg shadow-md">
+    <div class="bg-gray-700 p-6 rounded-lg shadow-md mb-8">
         <div class="flex flex-col md:flex-row items-center justify-between mb-6 pb-4 border-b border-gray-600">
             <h2 class="text-2xl font-semibold text-gray-100 mb-2 md:mb-0">{{ profile.user_name }}</h2>
-            <span class="px-4 py-1 bg-green-700 text-green-100 rounded-full text-sm font-medium">{{ profile.user_type }}</span>
+            <div class="flex items-center">
+                <span class="px-4 py-1 bg-blue-700 text-blue-100 rounded-full text-sm font-medium mr-2">Zerodha</span>
+                <span class="px-4 py-1 bg-green-700 text-green-100 rounded-full text-sm font-medium">{{ profile.user_type }}</span>
+            </div>
         </div>
 
         <div class="grid md:grid-cols-2 gap-x-8 gap-y-6">
@@ -84,6 +87,80 @@
         </div>
         {% endif %}
     </div>
+    {% endif %}
+
+    {% if upstox_profile %}
+    <div class="bg-gray-700 p-6 rounded-lg shadow-md">
+        <div class="flex flex-col md:flex-row items-center justify-between mb-6 pb-4 border-b border-gray-600">
+            <h2 class="text-2xl font-semibold text-gray-100 mb-2 md:mb-0">{{ upstox_profile.user_name }}</h2>
+            <div class="flex items-center">
+                <span class="px-4 py-1 bg-green-600 text-green-100 rounded-full text-sm font-medium">Upstox</span>
+            </div>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-x-8 gap-y-6">
+            <div>
+                <h3 class="text-xl font-semibold text-gray-200 mb-4">Basic Information</h3>
+                <div class="space-y-4">
+                    <div>
+                        <p class="text-sm text-gray-400">User ID</p>
+                        <p class="font-medium text-gray-50">{{ upstox_profile.user_id }}</p>
+                    </div>
+                    <div>
+                        <p class="text-sm text-gray-400">Email</p>
+                        <p class="font-medium text-gray-50">{{ upstox_profile.email }}</p>
+                    </div>
+                    {% if upstox_profile.mobile %}
+                    <div>
+                        <p class="text-sm text-gray-400">Phone</p>
+                        <p class="font-medium text-gray-50">{{ upstox_profile.mobile }}</p>
+                    </div>
+                    {% endif %}
+                    {% if upstox_profile.pan %}
+                    <div>
+                        <p class="text-sm text-gray-400">PAN</p>
+                        <p class="font-medium text-gray-50">{{ upstox_profile.pan }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div>
+                <h3 class="text-xl font-semibold text-gray-200 mb-4">Account Details</h3>
+                <div class="space-y-4">
+                    <div>
+                        <p class="text-sm text-gray-400">Broker</p>
+                        <p class="font-medium text-gray-50">Upstox</p>
+                    </div>
+                    <div>
+                        <p class="text-sm text-gray-400">Client ID</p>
+                        <p class="font-medium text-gray-50">{{ upstox_profile.client_id }}</p>
+                    </div>
+                    {% if upstox_profile.exchanges %}
+                    <div>
+                        <p class="text-sm text-gray-400">Exchange Subscriptions</p>
+                        <div class="flex flex-wrap gap-2 mt-1">
+                            {% for exchange in upstox_profile.exchanges %}
+                            <span class="px-3 py-1 bg-green-700 text-green-100 rounded-full text-xs font-medium">{{ exchange }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if upstox_profile.products %}
+                    <div>
+                        <p class="text-sm text-gray-400">Products Allowed</p>
+                        <div class="flex flex-wrap gap-2 mt-1">
+                            {% for product in upstox_profile.products %}
+                            <span class="px-3 py-1 bg-purple-700 text-purple-100 rounded-full text-xs font-medium">{{ product }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="flex flex-col md:flex-row justify-between items-center mt-8 pt-6 border-t border-gray-600">
         <a href="/dashboard" class="mb-4 md:mb-0 px-6 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-md text-gray-200 transition duration-300 font-medium">
@@ -93,7 +170,8 @@
             Logout
         </a>
     </div>
-    {% else %}
+
+    {% if not profile and not upstox_profile %}
     <div class="bg-gray-800 shadow-xl rounded-lg p-8 text-center">
         <p class="text-red-400 text-lg mb-4">Unable to load profile information.</p>
         <a href="/dashboard" class="mt-4 inline-block px-6 py-2.5 bg-blue-600 hover:bg-blue-700 rounded-md text-white transition duration-300 font-semibold">

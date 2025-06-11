@@ -100,7 +100,8 @@ document.addEventListener('DOMContentLoaded', function() {
     fetch('/api/watchlist/load')
         .then(response => response.json())
         .then(async data => {
-            if (data && data.watchlist && Array.isArray(data.watchlist)) {
+            console.log('Loaded watchlist data:', data); // Debug loaded data
+            if (data && data.success && data.watchlist && Array.isArray(data.watchlist)) {
                 for (const savedItem of data.watchlist) { // savedItem can be a string or a basic object
                     const symbolToFetch = typeof savedItem === 'string' ? savedItem : (savedItem.symbol || savedItem.tradingsymbol);
                     if (!symbolToFetch) {
@@ -108,33 +109,53 @@ document.addEventListener('DOMContentLoaded', function() {
                         continue;
                     }
                     try {
+                        console.log(`Fetching details for symbol: ${symbolToFetch}`); // Debug search
                         // Fetch full instrument details to get the Upstox instrument_key
                         const searchResp = await fetch(`/search-upstox-symbols?query=${encodeURIComponent(symbolToFetch)}`);
-                        const searchResults = await searchResp.json();
+                        const searchData = await searchResp.json();
 
-                        if (searchResults && searchResults.length > 0) {
-                            // Find an exact match or the first result if only one.
-                            const fullItem = searchResults.find(res => (res.symbol || res.tradingsymbol) === symbolToFetch) || searchResults[0];
+                        console.log(`Search results for ${symbolToFetch}:`, searchData); // Debug results
+
+                        // Check if we have success and symbols array in the response
+                        if (searchData && searchData.success && searchData.symbols && searchData.symbols.length > 0) {
+                            // Find exact match by symbol (case insensitive comparison)
+                            const exactMatch = searchData.symbols.find(res =>
+                                (res.symbol && res.symbol.toUpperCase() === symbolToFetch.toUpperCase()) ||
+                                (res.tradingsymbol && res.tradingsymbol.toUpperCase() === symbolToFetch.toUpperCase())
+                            );
+
+                            // Use exact match if found, otherwise use first result
+                            const fullItem = exactMatch || searchData.symbols[0];
 
                             if (fullItem && fullItem.instrument_key) {
+                                console.log(`Adding ${symbolToFetch} to watchlist with key: ${fullItem.instrument_key}`);
                                 watchlist[fullItem.instrument_key] = {
                                     symbolData: { ...fullItem, description: fullItem.name || fullItem.description || fullItem.symbol },
                                     chartSeries: null,
                                     lastTick: { last_price: fullItem.last_price || 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0, timestamp: Date.now() }
                                 };
                             } else {
-                                console.warn(`Could not find full details or instrument_key for saved symbol: ${symbolToFetch}`);
+                                console.warn(`Could not find full details or instrument_key for saved symbol: ${symbolToFetch}`, fullItem);
                             }
+                        } else {
+                            console.warn(`No search results found for symbol: ${symbolToFetch}`, searchData);
                         }
                     } catch (e) {
                         console.error(`Error processing saved watchlist symbol ${symbolToFetch}:`, e);
                     }
                 }
+
+                console.log('Watchlist after loading:', Object.keys(watchlist)); // Debug final watchlist
+
                 renderWatchlist();
                 // Subscribe to all loaded watchlist items
                 const keysToSubscribe = Object.keys(watchlist);
                 if (keysToSubscribe.length > 0) {
                     socket.emit('subscribe_upstox_market_data', { instrument_keys: keysToSubscribe });
+                    // If no active symbol yet, load the first one
+                    if (!activeInstrumentKey && keysToSubscribe.length > 0) {
+                        loadChartForSymbol(keysToSubscribe[0]);
+                    }
                 }
             } else {
                 console.warn('No watchlist data found or invalid format:', data);
@@ -152,11 +173,11 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/watchlist/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbols: symbolsToSave }) // Server expects {symbols: [...]}
+            body: JSON.stringify({ watchlist: symbolsToSave }) // Use 'watchlist' key for consistency
         })
         .then(response => response.json())
         .then(data => {
-            if (!data.status || data.status !== 'success') {
+            if (!data.success) {
                 console.warn('Failed to save watchlist:', data);
             } else {
                 console.log('Watchlist saved successfully.');
@@ -218,8 +239,24 @@ document.addEventListener('DOMContentLoaded', function() {
 
     socket.on('upstox_market_data_status', function(data) {
         console.log('Upstox Market Data Status:', data.status);
+        // Only show "Connected" status, hide all subscription-related messages
+        if (data.status && (
+            data.status.includes('Subscribing to') ||
+            data.status.includes('subscription') ||
+            data.status.includes('Already subscribed') ||
+            data.status.includes('WebSocket')
+        )) {
+            // For subscription messages, just show "Connected" if not already shown
+            if (chartStatusSpan.textContent !== 'Connected') {
+                chartStatusSpan.textContent = 'Connected';
+                chartStatusSpan.className = 'text-sm text-green-400';
+            }
+            return;
+        }
+
+        // Only show non-subscription related status messages
         chartStatusSpan.textContent = data.status;
-        // chartStatusSpan.className = 'text-sm text-green-400'; // Or based on status
+        chartStatusSpan.className = 'text-sm text-green-400';
     });
 
     socket.on('upstox_market_data_error', function(data) {
@@ -242,13 +279,27 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 searchResultsDiv.innerHTML = '';
-                if (data.error) {
-                    searchResultsDiv.innerHTML = `<div class="p-2 text-red-400">${data.error}</div>`;
-                } else if (data.length > 0) {
-                    data.forEach(item => { // item from Upstox search should have instrument_key
+
+                // Check for error in the response
+                if (!data.success) {
+                    searchResultsDiv.innerHTML = `<div class="p-2 text-red-400">${data.error || 'Error searching for symbols'}</div>`;
+                    searchResultsDiv.classList.remove('hidden');
+                    return;
+                }
+
+                // Access the symbols array from the response
+                const symbols = data.symbols || [];
+
+                if (symbols.length > 0) {
+                    symbols.forEach(item => { // item from Upstox search should have instrument_key
                         const resultItem = document.createElement('div');
                         resultItem.className = 'p-2 hover:bg-gray-600 cursor-pointer border-b border-gray-500 text-gray-200 text-sm';
-                        resultItem.textContent = `${item.symbol || item.tradingsymbol} - ${item.name || item.description || ''}`;
+
+                        // Include both symbol and name in the display
+                        const symbol = item.symbol || item.tradingsymbol || '';
+                        const name = item.name || item.description || '';
+                        resultItem.textContent = `${symbol} - ${name}`;
+
                         resultItem.addEventListener('click', function() {
                             addSymbolToWatchlist(item);
                             symbolSearchInput.value = '';

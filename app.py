@@ -356,9 +356,15 @@ def index():
                     profile_response = requests.get(profile_url, headers=headers)
                     profile_response.raise_for_status()
 
-                    upstox_profile = profile_response.json().get('data', {})
+                    # Parse response according to Upstox API documentation
+                    response_data = profile_response.json()
+                    upstox_profile = response_data.get('data', {})
+
+                    # Log profile data structure for debugging
+                    logger.info(f"Retrieved Upstox profile data: {upstox_profile}")
+
                     session['upstox_profile'] = upstox_profile
-                    logger.info("Successfully retrieved missing Upstox user profile")
+                    logger.info("Successfully retrieved Upstox user profile")
                 except Exception as e:
                     logger.error(f"Error fetching Upstox user profile: {e}")
 

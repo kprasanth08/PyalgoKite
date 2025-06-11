@@ -65,6 +65,67 @@ _instruments_cache = {
     "last_updated": None
 }
 
+def refresh_and_filter_nse_instruments():
+    """
+    Downloads, filters (for NSE_EQ), and saves NSE instruments to the cache file.
+    Updates the in-memory cache as well.
+    """
+    try:
+        logger.info(f"Attempting to download instruments from {NSE_CSV_URL}")
+        response = requests.get(NSE_CSV_URL, stream=True)
+        response.raise_for_status() # Raises an HTTPError for bad responses (4XX or 5XX)
+
+        logger.info("Decompressing and reading CSV data...")
+        # Use BytesIO to handle the binary content in memory for gzip
+        with gzip.GzipFile(fileobj=BytesIO(response.content)) as gz_file:
+            # Read the decompressed content as text (assuming UTF-8 encoding)
+            csv_content = gz_file.read().decode('utf-8')
+            # Use StringIO to treat the string as a file for csv.DictReader
+            csv_file = StringIO(csv_content)
+            reader = csv.DictReader(csv_file)
+            all_instruments = list(reader)
+
+        logger.info(f"Downloaded {len(all_instruments)} instruments. Filtering for exchange='NSE_EQ'...")
+
+        nse_eq_instruments = []
+        for instrument in all_instruments:
+            # Assuming the CSV has an 'exchange' column and its value can be 'NSE_EQ'.
+            # Adjust this condition if the CSV structure is different
+            # (e.g., if exchange is 'NSE' and another column like 'instrument_type' is 'EQ').
+            if instrument.get('exchange') == 'NSE_EQ':
+                nse_eq_instruments.append(instrument)
+
+        logger.info(f"Found {len(nse_eq_instruments)} NSE_EQ instruments after filtering.")
+
+        # Ensure the cache directory exists
+        cache_dir = os.path.dirname(NSE_CSV_PROCESSED_PATH)
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+            logger.info(f"Created cache directory: {cache_dir}")
+
+        with open(NSE_CSV_PROCESSED_PATH, 'w') as f:
+            json.dump(nse_eq_instruments, f, indent=4)
+
+        logger.info(f"Successfully saved {len(nse_eq_instruments)} NSE_EQ instruments to {NSE_CSV_PROCESSED_PATH}")
+
+        # Update in-memory cache
+        global _instruments_cache
+        _instruments_cache["NSE_EQ"] = nse_eq_instruments
+        _instruments_cache["last_updated"] = datetime.now().isoformat()
+        return True
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error downloading instruments from {NSE_CSV_URL}: {e}")
+    except gzip.BadGzipFile:
+        logger.error(f"Failed to decompress the downloaded file from {NSE_CSV_URL}. It might not be a valid Gzip file.")
+    except csv.Error as e:
+        logger.error(f"Error reading or parsing CSV data: {e}")
+    except IOError as e:
+        logger.error(f"Error writing processed instruments to {NSE_CSV_PROCESSED_PATH}: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during instrument processing: {e}", exc_info=True)
+    return False
+
 def get_access_token():
     """
     Get or refresh access token for Upstox API V3
@@ -459,10 +520,44 @@ def get_auth_code_from_url(redirect_url):
         logger.error(f"Error extracting auth code from URL: {str(e)}")
         return None
 
+def is_cache_stale(cache_file):
+    """
+    Check if the cache file is stale (older than 1 day)
+
+    Args:
+        cache_file (str): Path to the cache file
+
+    Returns:
+        bool: True if the file doesn't exist or is older than 1 day
+    """
+    try:
+        if not os.path.exists(cache_file):
+            logger.info(f"Cache file {cache_file} does not exist.")
+            return True
+
+        file_modified_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+        current_time = datetime.now()
+
+        # Calculate time difference in hours
+        time_difference = (current_time - file_modified_time).total_seconds() / 3600
+
+        # If cache is older than 24 hours (1 day), consider it stale
+        is_stale = time_difference > 24
+        if is_stale:
+            logger.info(f"Cache file {cache_file} is stale, last updated {time_difference:.1f} hours ago.")
+
+        return is_stale
+    except Exception as e:
+        logger.error(f"Error checking cache staleness for {cache_file}: {str(e)}")
+        # If there's an error checking, consider the cache stale
+        return True
+
+
 def get_instruments_cache(exchange="NSE_EQ"):
     """
     Get instruments cache for the specified exchange.
-    Loads from processed JSON file if available.
+    Loads from processed JSON file if available. If not, attempts to refresh it.
+    Refreshes cache automatically if it's older than 1 day.
 
     Args:
         exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
@@ -472,34 +567,83 @@ def get_instruments_cache(exchange="NSE_EQ"):
     """
     global _instruments_cache
 
-    # Check if cache is already loaded
+    # Check if cache is already loaded in memory
     if _instruments_cache.get(exchange) is not None:
-        return _instruments_cache[exchange]
+        cache_timestamp = _instruments_cache.get("last_updated")
+        if cache_timestamp:
+            try:
+                # Check if in-memory cache is fresh (less than 1 day old)
+                cache_time = datetime.fromisoformat(cache_timestamp)
+                current_time = datetime.now()
+                cache_age_hours = (current_time - cache_time).total_seconds() / 3600
 
-    # Load from processed JSON file
-    try:
-        if exchange == "NSE_EQ":
-            cache_file = NSE_CSV_PROCESSED_PATH
+                if cache_age_hours < 24:  # Less than 1 day old
+                    return _instruments_cache[exchange]
+                else:
+                    logger.info(f"In-memory instrument cache is {cache_age_hours:.1f} hours old, refreshing...")
+            except Exception as e:
+                logger.warning(f"Error checking in-memory cache age: {e}")
+                # Continue to refresh cache
+
+    # Determine the cache file path
+    cache_file_to_check = None
+    if exchange == "NSE_EQ":
+        cache_file_to_check = NSE_CSV_PROCESSED_PATH
+    else:
+        logger.warning(f"Instruments cache not implemented for exchange: {exchange}")
+        return []
+
+    # Check if file cache is stale
+    cache_is_stale = is_cache_stale(cache_file_to_check)
+
+    # If cache is stale, refresh it
+    if cache_is_stale and exchange == "NSE_EQ":
+        logger.info(f"Refreshing stale instrument cache for {exchange}...")
+        if refresh_and_filter_nse_instruments():
+            logger.info(f"Successfully refreshed instruments for {exchange}.")
+            return _instruments_cache[exchange]
         else:
-            # Currently only supporting NSE_EQ
-            logger.warning(f"Instruments cache not implemented for exchange: {exchange}")
-            return []
+            logger.error(f"Failed to refresh instruments for {exchange}. Attempting to load existing cache.")
 
-        if os.path.exists(cache_file):
-            with open(cache_file, 'r') as f:
+    # Try to load from file if available
+    try:
+        if os.path.exists(cache_file_to_check):
+            with open(cache_file_to_check, 'r') as f:
                 instruments = json.load(f)
 
             # Store in memory cache
             _instruments_cache[exchange] = instruments
             _instruments_cache["last_updated"] = datetime.now().isoformat()
 
-            logger.info(f"Loaded {len(instruments)} instruments for {exchange} from cache")
+            logger.info(f"Loaded {len(instruments)} instruments for {exchange} from cache file: {cache_file_to_check}")
             return instruments
         else:
-            logger.warning(f"Instruments cache file not found: {cache_file}")
-            return []
+            logger.warning(f"Instruments cache file not found: {cache_file_to_check}. Attempting to refresh.")
+            # Attempt to refresh/create the cache file
+            if exchange == "NSE_EQ":
+                if refresh_and_filter_nse_instruments():
+                    logger.info(f"Successfully refreshed and loaded instruments for {exchange}.")
+                    # The refresh function already updates _instruments_cache
+                    return _instruments_cache[exchange]
+                else:
+                    logger.error(f"Failed to refresh instruments for {exchange} after cache file was not found.")
+                    return []
+            else:
+                # Should not happen if we returned earlier for non-NSE_EQ
+                return []
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Error decoding JSON from instruments cache file {cache_file_to_check}: {e}. Attempting to refresh.")
+        if exchange == "NSE_EQ":
+            if refresh_and_filter_nse_instruments():
+                logger.info(f"Successfully refreshed and loaded instruments for {exchange} after JSON error.")
+                return _instruments_cache[exchange]
+            else:
+                logger.error(f"Failed to refresh instruments for {exchange} after JSON error.")
+                return []
+        return [] # Should not happen
     except Exception as e:
-        logger.error(f"Error loading instruments cache for {exchange}: {str(e)}")
+        logger.error(f"Error loading instruments cache for {exchange} from {cache_file_to_check}: {str(e)}")
         return []
 
 def search_instruments(query, exchange="NSE_EQ"):
@@ -526,16 +670,20 @@ def search_instruments(query, exchange="NSE_EQ"):
             logger.error(f"No instruments available for exchange {exchange}")
             return []
 
-        # Perform a case-insensitive search on both symbol and name
+        # Perform a case-insensitive search on both symbol/tradingsymbol and name
         query = query.upper()
         results = []
 
         for inst in instruments:
-            # Check if the query matches the symbol or name
-            symbol = inst.get('symbol', '').upper()
+            # Check if the query matches the symbol (using either field name) or name
+            symbol = inst.get('tradingsymbol', inst.get('symbol', '')).upper()
             name = inst.get('name', '').upper()
 
             if query in symbol or query in name:
+                # Ensure the instrument has a consistent symbol field regardless of source
+                if 'symbol' not in inst and 'tradingsymbol' in inst:
+                    inst['symbol'] = inst['tradingsymbol']
+
                 results.append(inst)
 
                 # Limit results to a reasonable number
@@ -571,13 +719,14 @@ def search_symbols(api_client, query, exchange="NSE_EQ"):
             instrument_key = inst.get('instrument_key', '')
             isin = inst.get('isin', '')
 
-            if symbol and instrument_key:
+            # Only include instruments with exchange NSE_EQ
+            if symbol and instrument_key and inst.get('exchange') == 'NSE_EQ':
                 formatted_results.append({
                     "symbol": symbol,
                     "name": name,
                     "instrument_key": instrument_key,
                     "isin": isin,
-                    "exchange": exchange
+                    "exchange": "NSE_EQ"
                 })
 
         return formatted_results
