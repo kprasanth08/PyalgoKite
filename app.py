@@ -721,5 +721,46 @@ def upstox_callback():
             logger.error(f"Upstox API error response: {e.response.text}")
         return render_template('layout.html', error=f"Error during Upstox authentication: {str(e)}")
 
+@app.route('/api/historical-data')
+@require_login
+def fetch_historical_data():
+    """API endpoint to fetch historical candle data for a symbol"""
+    try:
+        symbol = request.args.get('symbol')
+        exchange = request.args.get('exchange', 'NSE_EQ')
+        interval = request.args.get('interval', '1day')
+        from_date = request.args.get('from_date')
+        to_date = request.args.get('to_date')
+
+        if not symbol:
+            return jsonify({"success": False, "error": "Symbol is required"}), 400
+
+        # Get Upstox client
+        upstox_api_client = upstox_service.get_configuration_api_client()
+        if not upstox_api_client:
+            logger.error("Failed to get Upstox ApiClient for historical data.")
+            return jsonify({"success": False, "error": "Upstox authentication failed"}), 401
+
+        # Fetch historical data using upstox_service
+        historical_data = upstox_service.get_historical_data(
+            symbol=symbol,
+            interval=interval,
+            from_date=from_date,
+            to_date=to_date,
+            exchange=exchange
+        )
+
+        if historical_data is None:
+            return jsonify({"success": False, "error": "Failed to fetch historical data"}), 500
+
+        return jsonify({
+            "success": True,
+            "data": historical_data
+        })
+
+    except Exception as e:
+        logger.error(f"Error fetching historical data: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')

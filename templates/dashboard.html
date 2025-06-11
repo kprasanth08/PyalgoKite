@@ -44,11 +44,17 @@
     .custom-scrollbar::-webkit-scrollbar-thumb:hover {
         background: #6b7280; /* gray-500 */
     }
+
+    /* Custom width and height for watchlist panel */
+    .w-1\/4 {
+        width: 25%;
+        height: 80vh;
+    }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="flex flex-col h-[calc(100vh-100px)] bg-gray-900 text-gray-300 p-4 gap-4">
+<div class="flex flex-col h-[80vh] bg-gray-900 text-gray-300 p-4 gap-4">
     <div class="flex-none">
         <h1 class="text-2xl font-semibold text-gray-100">Trading Dashboard</h1>
     </div>
@@ -71,7 +77,23 @@
         <div class="w-3/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4">
             <div class="flex-none flex justify-between items-center mb-3">
                 <h3 id="chartSymbol" class="text-lg font-semibold text-gray-100">Live Chart</h3>
-                <span id="chartStatus" class="text-sm text-gray-400"></span>
+                <div class="flex items-center space-x-2">
+                    <!-- Timeframe selector -->
+                    <div class="flex items-center">
+                        <label for="timeframeSelect" class="text-sm text-gray-400 mr-2">Timeframe:</label>
+                        <select id="timeframeSelect" class="bg-gray-700 text-gray-200 text-sm rounded-md border border-gray-600 py-1 px-2">
+                            <option value="1minute">1 Minute</option>
+                            <option value="5minute">5 Minutes</option>
+                            <option value="15minute">15 Minutes</option>
+                            <option value="30minute">30 Minutes</option>
+                            <option value="1hour">1 Hour</option>
+                            <option value="1day" selected>1 Day</option>
+                            <option value="1week">1 Week</option>
+                            <option value="1month">1 Month</option>
+                        </select>
+                    </div>
+                    <span id="chartStatus" class="text-sm text-gray-400"></span>
+                </div>
             </div>
             <div id="chartContainer" class="flex-grow relative">
                 <p id="chartPlaceholder" class="absolute inset-0 flex items-center justify-center text-gray-500">Select a symbol from the watchlist to view its chart.</p>
@@ -91,10 +113,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const chartSymbolHeader = document.getElementById('chartSymbol');
     const chartStatusSpan = document.getElementById('chartStatus');
     const chartPlaceholder = document.getElementById('chartPlaceholder');
+    const timeframeSelect = document.getElementById('timeframeSelect');
 
     let watchlist = {}; // Keyed by Upstox instrument_key
-    let lightweightChart = null;
-    let activeInstrumentKey = null; // Renamed from activeInstrumentToken
+    let chartJSChart = null; // Changed from lightweightChart
+    let activeInstrumentKey = null;
 
     // --- Load watchlist from backend on page load ---
     fetch('/api/watchlist/load')
@@ -219,18 +242,47 @@ document.addEventListener('DOMContentLoaded', function() {
                 last_traded_time: tickData.last_traded_time
             };
 
-            if (symbolInfo.chartSeries && tickData.last_price && activeInstrumentKey === tickData.instrument_key) {
-                const candle = {
-                    time: Math.floor((tickData.timestamp || Date.now()) / 1000),
-                    open: tickData.ohlc ? tickData.ohlc.open : tickData.last_price,
-                    high: tickData.ohlc ? tickData.ohlc.high : tickData.last_price,
-                    low: tickData.ohlc ? tickData.ohlc.low : tickData.last_price,
-                    close: tickData.last_price
-                };
-                try {
-                  symbolInfo.chartSeries.update(candle);
-                } catch (e) {
-                  console.error("Error updating chart series:", e, candle);
+            // Update Chart.js chart if this is the active symbol
+            if (chartJSChart && activeInstrumentKey === tickData.instrument_key && tickData.last_price !== undefined && tickData.last_price !== null) {
+                const time = tickData.timestamp || Date.now(); // Use milliseconds for Chart.js
+                const open = tickData.ohlc && tickData.ohlc.open !== undefined && tickData.ohlc.open !== null ? tickData.ohlc.open : tickData.last_price;
+                const high = tickData.ohlc && tickData.ohlc.high !== undefined && tickData.ohlc.high !== null ? tickData.ohlc.high : tickData.last_price;
+                const low = tickData.ohlc && tickData.ohlc.low !== undefined && tickData.ohlc.low !== null ? tickData.ohlc.low : tickData.last_price;
+                const close = tickData.last_price;
+
+                if (open === null || high === null || low === null || close === null ||
+                    open === undefined || high === undefined || low === undefined || close === undefined) {
+                    console.warn("Skipping Chart.js tick update due to null/undefined critical OHLC value:",
+                                 { tickData, time, open, high, low, close });
+                } else {
+                    const newDataPoint = {
+                        x: time,
+                        o: parseFloat(open),
+                        h: parseFloat(high),
+                        l: parseFloat(low),
+                        c: parseFloat(close)
+                    };
+
+                    // Check if the last point in the chart is from the same interval
+                    const dataset = chartJSChart.data.datasets[0].data;
+                    if (dataset.length > 0) {
+                        const lastPoint = dataset[dataset.length - 1];
+                        const lastTime = lastPoint.x;
+                        const currentTimeframe = timeframeSelect.value;
+                        let intervalMillis = getIntervalMilliseconds(currentTimeframe);
+
+                        if (time < lastTime + intervalMillis && time >= lastTime) { // Current tick is within the last candle's interval
+                            lastPoint.h = Math.max(lastPoint.h, newDataPoint.h);
+                            lastPoint.l = Math.min(lastPoint.l, newDataPoint.l);
+                            lastPoint.c = newDataPoint.c;
+                        } else if (time >= lastTime + intervalMillis) { // New candle
+                            dataset.push(newDataPoint);
+                        }
+                        // else: tick is older than last candle, might happen with delayed data, ignore for now or handle
+                    } else {
+                        dataset.push(newDataPoint);
+                    }
+                    chartJSChart.update('quiet'); // 'quiet' prevents animation
                 }
             }
             updateWatchlistItemDisplay(tickData.instrument_key);
@@ -348,10 +400,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function removeSymbolFromWatchlist(instrumentKeyToRemove) { // Argument is Upstox instrument_key
         if (!watchlist[instrumentKeyToRemove]) return;
 
-        const series = watchlist[instrumentKeyToRemove].chartSeries;
-        if (series && lightweightChart) {
-            try { lightweightChart.removeSeries(series); } catch(e) { console.warn("Error removing series on remove:", e); }
-        }
+        // No direct series removal in Chart.js like Lightweight Charts, chart is destroyed and recreated
         delete watchlist[instrumentKeyToRemove];
         renderWatchlist();
         saveWatchlistToBackend();
@@ -361,12 +410,18 @@ document.addEventListener('DOMContentLoaded', function() {
         if (activeInstrumentKey === instrumentKeyToRemove) {
             activeInstrumentKey = null;
             chartSymbolHeader.textContent = 'Live Chart';
-            if (lightweightChart) {
-                 chartContainer.innerHTML = ''; // Clear chart
-                 lightweightChart = null; // Reset chart object
-                 chartContainer.appendChild(chartPlaceholder);
+            if (chartJSChart) {
+                chartJSChart.destroy();
+                chartJSChart = null;
             }
-            chartPlaceholder.classList.remove('hidden');
+            // Ensure chartContainer is empty and placeholder is visible
+            chartContainer.innerHTML = ''; // Clear any canvas
+            const placeholder = document.createElement('p');
+            placeholder.id = 'chartPlaceholder';
+            placeholder.className = 'absolute inset-0 flex items-center justify-center text-gray-500';
+            placeholder.textContent = 'Select a symbol from the watchlist to view its chart.';
+            chartContainer.appendChild(placeholder);
+
             const remainingKeys = Object.keys(watchlist);
             if (remainingKeys.length > 0) {
                 loadChartForSymbol(remainingKeys[0]); // Load first from remaining
@@ -485,60 +540,270 @@ document.addEventListener('DOMContentLoaded', function() {
     function loadChartForSymbol(instrumentKeyToLoad) { // Argument is Upstox instrument_key
         if (!watchlist[instrumentKeyToLoad]) return;
 
-        const oldActiveKey = activeInstrumentKey;
         activeInstrumentKey = instrumentKeyToLoad;
 
         const symbolData = watchlist[instrumentKeyToLoad].symbolData;
         chartSymbolHeader.textContent = `${symbolData.symbol || symbolData.tradingsymbol} (${symbolData.description || 'N/A'})`;
-        chartPlaceholder.classList.add('hidden');
 
-        if (lightweightChart) {
-            // Remove series of previously active symbol if it's different
-            if (oldActiveKey && oldActiveKey !== activeInstrumentKey && watchlist[oldActiveKey] && watchlist[oldActiveKey].chartSeries) {
-                 try { lightweightChart.removeSeries(watchlist[oldActiveKey].chartSeries); } catch(e) { /* ignore */ }
-                 watchlist[oldActiveKey].chartSeries = null;
-            }
-        } else {
-            chartContainer.innerHTML = ''; // Clear placeholder
-            lightweightChart = LightweightCharts.createChart(chartContainer, {
-                width: chartContainer.clientWidth,
-                height: chartContainer.clientHeight,
-                layout: { backgroundColor: '#1f2937', textColor: '#d1d5db' },
-                grid: { vertLines: { color: '#374151' }, horzLines: { color: '#374151' } },
-                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                timeScale: { borderColor: '#4b5563', timeVisible: true, secondsVisible: false },
-                priceScale: { borderColor: '#4b5563' },
-            });
+        const placeholder = document.getElementById('chartPlaceholder');
+        if(placeholder) placeholder.classList.add('hidden');
+
+        if (chartJSChart) {
+            chartJSChart.destroy();
+            chartJSChart = null;
         }
 
-        // Ensure only the active symbol's series is present
-        Object.keys(watchlist).forEach(key => {
-            if (key !== activeInstrumentKey && watchlist[key].chartSeries) {
-                try { lightweightChart.removeSeries(watchlist[key].chartSeries); } catch(e) { /* ignore */ }
-                watchlist[key].chartSeries = null;
-            }
-        });
-
-        if (!watchlist[activeInstrumentKey].chartSeries) {
-            const newSeries = lightweightChart.addCandlestickSeries({
-                upColor: '#10b981', downColor: '#f43f5e',
-                borderDownColor: '#f43f5e', borderUpColor: '#10b981',
-                wickDownColor: '#f43f5e', wickUpColor: '#10b981',
-            });
-            watchlist[activeInstrumentKey].chartSeries = newSeries;
-            // TODO: Optionally load historical data here for the new series
-            // For now, it will only update with live ticks.
+        // Create a canvas element for Chart.js if it doesn't exist
+        let canvas = chartContainer.querySelector('canvas');
+        if (!canvas) {
+            chartContainer.innerHTML = ''; // Clear placeholder or old chart
+            canvas = document.createElement('canvas');
+            chartContainer.appendChild(canvas);
         }
+        const ctx = canvas.getContext('2d');
+
+        try {
+            console.log("Creating Chart.js chart...");
+            chartJSChart = new Chart(ctx, {
+                type: 'candlestick', // Using chartjs-chart-financial for candlestick
+                data: {
+                    datasets: [{
+                        label: symbolData.symbol || symbolData.tradingsymbol,
+                        data: [], // Will be populated by historical data
+                        // borderColor: '#36A2EB', // Example color
+                        // backgroundColor: 'rgba(54, 162, 235, 0.5)', // Example color
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day', // Default, will be adjusted based on data/timeframe
+                                tooltipFormat: 'MMM dd, yyyy HH:mm',
+                                displayFormats: {
+                                    millisecond: 'HH:mm:ss.SSS',
+                                    second: 'HH:mm:ss',
+                                    minute: 'HH:mm',
+                                    hour: 'HH:mm',
+                                    day: 'MMM dd',
+                                    week: 'MMM dd',
+                                    month: 'MMM yyyy',
+                                    quarter: 'qqq yyyy',
+                                    year: 'yyyy'
+                                }
+                            },
+                            ticks: { color: '#d1d5db' },
+                            grid: { color: '#374151' }
+                        },
+                        y: {
+                            ticks: { color: '#d1d5db' },
+                            grid: { color: '#374151' }
+                        }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#d1d5db' } },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                        }
+                    },
+                    layout: {
+                        padding: {
+                            left: 10,
+                            right: 10,
+                            top: 10,
+                            bottom: 10
+                        }
+                    }
+                }
+            });
+            console.log("Chart.js chart created:", chartJSChart);
+        } catch (e) {
+            console.error("Error creating Chart.js chart:", e);
+            chartStatusSpan.textContent = 'Error creating chart';
+            chartStatusSpan.className = 'text-sm text-red-400';
+            if(placeholder) placeholder.classList.remove('hidden');
+            return;
+        }
+
         renderWatchlist(); // Re-render to update active styles
+
+        const selectedTimeframe = timeframeSelect.value;
+        const parts = instrumentKeyToLoad.split('|');
+        const symbol = parts.length > 1 ? parts[1] : instrumentKeyToLoad;
+        const exchange = parts.length > 1 ? parts[0] : 'NSE_EQ';
+
+        console.log(`Loading historical data for Chart.js: ${symbol} (${exchange}) with timeframe ${selectedTimeframe}`);
+
+        fetch(`/api/historical-data?symbol=${symbol}&exchange=${exchange}&interval=${selectedTimeframe}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data && data.success && data.data && Array.isArray(data.data)) {
+                    console.log(`Historical data for Chart.js for ${symbol}:`, data.data.length, 'candles. First few:', data.data.slice(0,3));
+                    const candles = data.data.map((candle, index) => {
+                        if (!candle || !Array.isArray(candle) || candle.length < 5) {
+                            console.warn(`Skipping invalid raw candle for Chart.js at index ${index} for ${symbol}:`, candle);
+                            return null;
+                        }
+                        const time = candle[0] ? new Date(candle[0]).getTime() : null; // Milliseconds for Chart.js
+                        const open = candle[1];
+                        const high = candle[2];
+                        const low = candle[3];
+                        const close = candle[4];
+
+                        if (time === null || open === null || high === null || low === null || close === null ||
+                            open === undefined || high === undefined || low === undefined || close === undefined) {
+                            console.warn(`Skipping Chart.js candle with null/undefined critical value for ${symbol} at index ${index}:`,
+                                         { raw: candle, time, open, high, low, close });
+                            return null;
+                        }
+                        return { x: time, o: parseFloat(open), h: parseFloat(high), l: parseFloat(low), c: parseFloat(close) };
+                    }).filter(c => c !== null);
+
+                    if (chartJSChart) {
+                        if (candles.length > 0) {
+                            chartJSChart.data.datasets[0].data = candles;
+                            // Adjust time unit based on data range and timeframe
+                            const timeUnit = getTimeUnitForChartJS(candles, selectedTimeframe);
+                            chartJSChart.options.scales.x.time.unit = timeUnit;
+                            chartJSChart.update();
+                            console.log(`Set historical data for Chart.js for ${symbol}. ${candles.length} valid candles. First:`, candles[0], 'Last:', candles[candles.length-1]);
+                        } else {
+                            console.warn(`No valid historical Chart.js candles to set for ${symbol}`);
+                            chartJSChart.data.datasets[0].data = [];
+                            chartJSChart.update();
+                        }
+                    }
+                } else {
+                    console.warn(`No historical data or invalid format for Chart.js for ${symbol}:`, data);
+                    if (chartJSChart) {
+                        chartJSChart.data.datasets[0].data = [];
+                        chartJSChart.update();
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('Error fetching historical data for Chart.js:', err);
+            });
+    }
+
+    // --- Timeframe Change Handling ---
+    timeframeSelect.addEventListener('change', function() {
+        const selectedTimeframe = this.value;
+        console.log('Selected timeframe for Chart.js:', selectedTimeframe);
+
+        if (activeInstrumentKey && watchlist[activeInstrumentKey]) {
+            const instrumentKeyToLoad = activeInstrumentKey;
+            const parts = instrumentKeyToLoad.split('|');
+            const symbol = parts.length > 1 ? parts[1] : instrumentKeyToLoad;
+            const exchange = parts.length > 1 ? parts[0] : 'NSE_EQ';
+
+            fetch(`/api/historical-data?symbol=${symbol}&exchange=${exchange}&interval=${selectedTimeframe}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.success && data.data && Array.isArray(data.data)) {
+                        const candles = data.data.map((candle, index) => {
+                            if (!candle || (!Array.isArray(candle) && typeof candle !== 'object') || (Array.isArray(candle) && candle.length < 5) ) {
+                                console.warn(`Skipping invalid raw candle (Chart.js timeframe change) for ${symbol} at index ${index}:`, candle);
+                                return null;
+                            }
+                            let timeVal, openVal, highVal, lowVal, closeVal;
+                            if (Array.isArray(candle)) {
+                                timeVal = candle[0] ? new Date(candle[0]).getTime() : null;
+                                openVal = candle[1]; highVal = candle[2]; lowVal = candle[3]; closeVal = candle[4];
+                            } else {
+                                if (candle.time) {
+                                    if (typeof candle.time === 'string' && isNaN(candle.time)) {
+                                        timeVal = new Date(candle.time).getTime();
+                                    } else {
+                                        timeVal = String(candle.time).length > 10 ? Number(candle.time) : Number(candle.time) * 1000; // to ms
+                                    }
+                                } else { timeVal = null; }
+                                openVal = candle.open; highVal = candle.high; lowVal = candle.low; closeVal = candle.close;
+                            }
+                            if (timeVal === null || openVal === null || highVal === null || lowVal === null || closeVal === null ||
+                                openVal === undefined || highVal === undefined || lowVal === undefined || closeVal === undefined || isNaN(timeVal)) {
+                                console.warn(`Skipping Chart.js candle (timeframe change) for ${symbol} with null/undefined/NaN value at index ${index}:`,
+                                             { raw: candle, time: timeVal, open: openVal, high: highVal, low: lowVal, close: closeVal });
+                                return null;
+                            }
+                            return { x: timeVal, o: parseFloat(openVal), h: parseFloat(highVal), l: parseFloat(lowVal), c: parseFloat(closeVal) };
+                        }).filter(c => c !== null);
+
+                        if (chartJSChart) {
+                            if (candles.length > 0) {
+                                chartJSChart.data.datasets[0].data = candles;
+                                const timeUnit = getTimeUnitForChartJS(candles, selectedTimeframe);
+                                chartJSChart.options.scales.x.time.unit = timeUnit;
+                                chartJSChart.update();
+                                console.log(`Set historical data (Chart.js timeframe change) for ${symbol}. ${candles.length} valid candles.`);
+                            } else {
+                                console.warn(`No valid historical Chart.js candles (timeframe change) for ${symbol}`);
+                                chartJSChart.data.datasets[0].data = [];
+                                chartJSChart.update();
+                            }
+                        }
+                    } else {
+                        console.warn(`No historical data or invalid format (Chart.js timeframe change) for ${symbol}:`, data);
+                        if (chartJSChart) {
+                            chartJSChart.data.datasets[0].data = [];
+                            chartJSChart.update();
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.error('Error fetching historical data for Chart.js (timeframe change):', err);
+                });
+        }
+    });
+
+    // Helper function to determine appropriate time unit for Chart.js x-axis
+    function getTimeUnitForChartJS(candles, timeframe) {
+        if (!candles || candles.length === 0) return 'day'; // Default
+
+        const firstTime = candles[0].x;
+        const lastTime = candles[candles.length - 1].x;
+        const rangeMillis = lastTime - firstTime;
+
+        // Adjust based on timeframe first
+        if (timeframe.includes('minute')) return 'minute';
+        if (timeframe.includes('hour')) return 'hour';
+        if (timeframe.includes('day')) return 'day';
+        if (timeframe.includes('week')) return 'week';
+        if (timeframe.includes('month')) return 'month';
+
+        // Fallback based on range if timeframe is not specific enough
+        const oneDay = 24 * 60 * 60 * 1000;
+        if (rangeMillis <= oneDay * 2) return 'hour';       // Up to 2 days: show hours
+        if (rangeMillis <= oneDay * 30 * 2) return 'day';  // Up to 2 months: show days
+        if (rangeMillis <= oneDay * 365 * 2) return 'month';// Up to 2 years: show months
+        return 'year'; // More than 2 years: show years
+    }
+
+    // Helper function to get interval in milliseconds
+    function getIntervalMilliseconds(timeframe) {
+        if (timeframe.includes('minute')) {
+            const minutes = parseInt(timeframe.replace('minute', ''));
+            return minutes * 60 * 1000;
+        }
+        if (timeframe.includes('hour')) {
+            const hours = parseInt(timeframe.replace('hour', ''));
+            return hours * 60 * 60 * 1000;
+        }
+        if (timeframe.includes('day')) return 24 * 60 * 60 * 1000;
+        if (timeframe.includes('week')) return 7 * 24 * 60 * 60 * 1000;
+        if (timeframe.includes('month')) return 30 * 24 * 60 * 60 * 1000; // Approximation
+        return 24 * 60 * 60 * 1000; // Default to 1 day
     }
 
     new ResizeObserver(entries => {
         if (entries.length === 0 || entries[0].target !== chartContainer) { return; }
-        if (lightweightChart) {
-            lightweightChart.applyOptions({
-                width: chartContainer.clientWidth,
-                height: chartContainer.clientHeight,
-            });
+        if (chartJSChart) {
+            // Chart.js handles responsiveness via maintainAspectRatio: false and its container size
+            // chartJSChart.resize(); // Usually not needed if responsive: true and maintainAspectRatio: false
         }
     }).observe(chartContainer);
 

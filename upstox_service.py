@@ -281,10 +281,12 @@ def get_history_v3_api():
     """
     Get an instance of the HistoryV3Api
     """
-    config = get_configuration()
-    if not config:
+    # Create an ApiClient instance instead of just a configuration
+    api_client = get_configuration_api_client()
+    if not api_client:
         return None
-    return HistoryV3Api(configuration=config)
+    # Initialize HistoryV3Api with the api_client instance
+    return HistoryV3Api(api_client=api_client)
 
 def get_login_api():
     """
@@ -411,7 +413,6 @@ def get_live_market_data(symbol, exchange="NSE_EQ"):
         # The Upstox client library's MarketQuoteV3Api().get_full_market_quote takes 'symbol' and 'api_version'.
         response = market_quote_api.get_full_market_quote(
             symbol=instrument_key,
-            api_version="3.0" # Explicitly pass api_version
         )
 
         if response and response.data:
@@ -466,39 +467,75 @@ def get_historical_data(symbol, interval="1day", from_date=None, to_date=None, e
         logger.error("Failed to create HistoryV3Api instance")
         return None
 
-    # Map the interval format from old API to new V3 API if needed
+    # Map interval to the format required by the Upstox API
+    # Based on the API documentation, valid units are "minutes", "hours", "days", "weeks", and "months" (plural form)
     interval_mapping = {
-        "minute": "1minute",
-        "day": "1day",
-        "week": "1week",
-        "month": "1month"
+        "1minute": {"unit": "minutes", "interval": 1},
+        "5minute": {"unit": "minutes", "interval": 5},
+        "15minute": {"unit": "minutes", "interval": 15},
+        "30minute": {"unit": "minutes", "interval": 30},
+        "1hour": {"unit": "hours", "interval": 1},
+        "1day": {"unit": "days", "interval": 1},
+        "1week": {"unit": "weeks", "interval": 1},
+        "1month": {"unit": "months", "interval": 1}
     }
 
-    # Use the mapping if an old-style interval is provided
-    if interval in interval_mapping:
-        interval = interval_mapping[interval]
+    # Get the unit and interval from the mapping
+    mapped_params = interval_mapping.get(interval)
+    if not mapped_params:
+        logger.error(f"Invalid interval format: {interval}")
+        return None
+
+    unit = mapped_params["unit"]
+    interval_value = mapped_params["interval"]
 
     try:
-        # Format instrument key for Upstox API V3
-        instrument_key = f"{exchange}:{symbol}"
+        # Format instrument key - use the correct format that works with the Upstox API
+        # Format should be "NSE_EQ|INE028A01039" with a pipe separator as shown in your code
+        instrument_key = f"{exchange}|{symbol}"
 
         # Default to last 30 days if no dates provided
-        if not from_date or not to_date:
+        if not to_date:
             to_date = datetime.now().strftime("%Y-%m-%d")
+        if not from_date:
             from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-        # Get historical data
-        response = history_api.get_candle_data(
-            symbol=instrument_key,
-            interval=interval,
-            from_date=from_date,
-            to_date=to_date,
-            api_version="3.0"
+        logger.info(f"Fetching historical data for {instrument_key} with unit={unit}, interval={interval_value}, to_date={to_date}, from_date={from_date}")
+
+        # Use the required parameters and format based on API error messages
+        # Note: 'from_date' parameter is not supported by the API, so we only use to_date
+        response = history_api.get_historical_candle_data(
+            instrument_key=instrument_key,
+            unit=unit,
+            interval=interval_value,
+            to_date=to_date
+            # from_date parameter removed as it's not supported by the API
         )
 
-        return response.data.candles if response and response.data else None
+        # Process the response data
+        if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
+            logger.info(f"Successfully retrieved historical data for {symbol}, got {len(response.data.candles)} candles")
+            return response.data.candles
+        else:
+            logger.warning(f"No candle data in response for {symbol}")
+            return None
+
+    except AttributeError as e:
+        logger.error(f"Method not found in HistoryV3Api: {e}")
+        # Add detailed debug information
+        logger.info(f"Available methods in HistoryV3Api: {[m for m in dir(history_api) if not m.startswith('_')]}")
+        return None
     except ApiException as e:
-        logger.error(f"Exception when calling HistoryV3Api->get_candle_data: {e}")
+        logger.error(f"API Exception when fetching historical data: {e}")
+        if hasattr(e, 'body') and e.body:
+            logger.error(f"Error body: {e.body}")
+            # Try to parse the error for better debugging
+            try:
+                import json
+                error_json = json.loads(e.body)
+                logger.error(f"Parsed error: {json.dumps(error_json, indent=2)}")
+            except:
+                pass
         return None
     except Exception as e:
         logger.error(f"Error fetching historical data from Upstox for {symbol}: {e}")
