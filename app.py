@@ -101,8 +101,8 @@ def require_login(f):
         upstox_authenticated = session.get('upstox_authenticated', False)
 
         if not (kite_authenticated or upstox_authenticated):
-            # If not authenticated with either service, redirect to login selection page
-            return redirect('/login_selection')
+            # If not authenticated with either service, redirect to login page
+            return redirect('/login')
 
         return f(*args, **kwargs)
     return decorated_function
@@ -440,7 +440,7 @@ def dashboard():
     except Exception as e:
         logger.error(f"Error accessing dashboard: {str(e)}")
         session.clear()  # Clear invalid session
-        return redirect('/login_selection') # Changed from /login
+        return redirect('/login') # Changed from /login_selection
 
 @app.route('/profile')
 @require_login
@@ -471,7 +471,7 @@ def user_profile():
 def logout():
     session.clear()
     logger.info("User logged out, session cleared.")
-    return redirect('/login_selection') # Changed from /login
+    return redirect('/')  # Redirect to homepage instead of login selection page
 
 # API Routes for Watchlist and Symbol Search
 
@@ -543,12 +543,6 @@ def search_upstox_symbols():
     except Exception as e:
         logger.error(f"Error searching Upstox symbols: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/login_selection')
-def login_selection():
-    """Display login selection page for users to choose between Kite and Upstox"""
-    session.clear()  # Clear any previous session data
-    return render_template('login_selection.html')
 
 @app.route('/login_upstox')
 def login_upstox():
@@ -658,8 +652,7 @@ def upstox_callback():
             logger.error(f"Error fetching Upstox user profile: {e}")
             # Continue even if profile fetch fails
 
-        return redirect('/dashboard')
-
+        return redirect('/')  # Redirect to home page instead of dashboard
     except Exception as e:
         logger.error(f"Error in Upstox callback: {str(e)}")
         if hasattr(e, 'response') and e.response is not None:
