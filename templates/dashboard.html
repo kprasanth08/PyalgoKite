@@ -119,6 +119,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let lightweightChart = null;
     let candleSeries = null;
     let activeInstrumentKey = null;
+    let currentLiveCandleData = null; // Added: Stores {time, open, high, low, close} for the forming candle
 
     // --- Load watchlist from backend on page load ---
     fetch('/api/watchlist/load')
@@ -234,25 +235,63 @@ document.addEventListener('DOMContentLoaded', function() {
         // console.log('Received Upstox Tick:', tickData);
         if (tickData && tickData.instrument_key && watchlist[tickData.instrument_key]) {
             const symbolInfo = watchlist[tickData.instrument_key];
-            symbolInfo.lastTick = { // Ensure all expected fields are present
+            // Update lastTick for watchlist display (ohlc here is from feed, likely daily or as provided)
+            symbolInfo.lastTick = {
                 last_price: tickData.last_price,
                 change: tickData.change,
                 percentage_change: tickData.percentage_change,
-                ohlc: tickData.ohlc,
+                ohlc: tickData.ohlc, // This ohlc from tickData is used for watchlist display if needed, not directly for chart candle formation here
                 timestamp: tickData.timestamp || Date.now(),
-                last_traded_time: tickData.last_traded_time
+                last_traded_time: tickData.last_traded_time // Unix timestamp in seconds
             };
 
-            if (candleSeries && activeInstrumentKey === tickData.instrument_key && tickData.last_price !== undefined) {
-                const lastTradeTime = tickData.last_traded_time ? (tickData.last_traded_time) : (Date.now()/1000);
-                const candle = {
-                    time: lastTradeTime,
-                    open: tickData.ohlc.open,
-                    high: tickData.ohlc.high,
-                    low: tickData.ohlc.low,
-                    close: tickData.last_price
-                };
-                candleSeries.update(candle);
+            if (candleSeries && activeInstrumentKey === tickData.instrument_key && typeof tickData.last_price !== 'undefined') {
+                const ltp = parseFloat(tickData.last_price);
+                const lastTradeTimestampSeconds = tickData.last_traded_time ? parseInt(tickData.last_traded_time, 10) : Math.floor(Date.now() / 1000);
+                const selectedTimeframe = timeframeSelect.value;
+                const tradeDate = new Date(lastTradeTimestampSeconds * 1000); // Work with Date object in UTC
+
+                let candleIntervalStartTime = lastTradeTimestampSeconds; // Fallback
+
+                // Calculate the aligned start time for the current interval in UTC
+                if (selectedTimeframe.endsWith('minute')) {
+                    const intervalMinutes = parseInt(selectedTimeframe.replace('minute', ''));
+                    if (intervalMinutes > 0) {
+                        const currentUtcMinutes = tradeDate.getUTCMinutes();
+                        const intervalStartUtcMinute = Math.floor(currentUtcMinutes / intervalMinutes) * intervalMinutes;
+                        tradeDate.setUTCMinutes(intervalStartUtcMinute, 0, 0); // Set seconds and ms to 0
+                        candleIntervalStartTime = Math.floor(tradeDate.getTime() / 1000);
+                    }
+                } else if (selectedTimeframe === "1hour") { // "1hour" corresponds to "60minute"
+                    tradeDate.setUTCMinutes(0, 0, 0); // Zero out minutes, seconds, ms for the current hour
+                    candleIntervalStartTime = Math.floor(tradeDate.getTime() / 1000);
+                } else if (selectedTimeframe === '1day') {
+                    tradeDate.setUTCHours(0, 0, 0, 0); // Start of the UTC day
+                    candleIntervalStartTime = Math.floor(tradeDate.getTime() / 1000);
+                } else {
+                    // For '1week', '1month', client-side aggregation from LTP is complex and often not done this way.
+                    // We will only update watchlist display for these, not live chart candles from LTP.
+                    updateWatchlistItemDisplay(tickData.instrument_key);
+                    return;
+                }
+
+                if (!currentLiveCandleData || currentLiveCandleData.time !== candleIntervalStartTime) {
+                    // New candle interval has started, or it's the first tick for this chart configuration
+                    currentLiveCandleData = {
+                        time: candleIntervalStartTime,
+                        open: ltp,
+                        high: ltp,
+                        low: ltp,
+                        close: ltp
+                    };
+                } else {
+                    // Update existing current candle
+                    currentLiveCandleData.high = Math.max(currentLiveCandleData.high, ltp);
+                    currentLiveCandleData.low = Math.min(currentLiveCandleData.low, ltp);
+                    currentLiveCandleData.close = ltp;
+                }
+                // console.log(`[Chart Debug] Updating live candle for ${activeInstrumentKey} (${selectedTimeframe}): Time=${currentLiveCandleData.time}, O=${currentLiveCandleData.open}, H=${currentLiveCandleData.high}, L=${currentLiveCandleData.low}, C=${currentLiveCandleData.close}`);
+                candleSeries.update(currentLiveCandleData);
             }
             updateWatchlistItemDisplay(tickData.instrument_key);
         }
@@ -510,6 +549,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!watchlist[instrumentKeyToLoad]) return;
 
         activeInstrumentKey = instrumentKeyToLoad;
+        currentLiveCandleData = null; // Added: Reset for new chart/symbol/timeframe
 
         const symbolData = watchlist[instrumentKeyToLoad].symbolData;
         chartSymbolHeader.textContent = `${symbolData.symbol || symbolData.tradingsymbol} (${symbolData.description || 'N/A'})`;
@@ -566,19 +606,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.error('[Chart Debug] LightweightCharts.createChart returned null or undefined.');
                 throw new Error('Failed to create chart object.');
             }
-            // This is the critical check based on the error you're seeing
-            if (typeof lightweightChart.addSeries !== 'function') { // V5 uses addSeries
-                console.error('[Chart Debug] addSeries is NOT a function on the created chart object. Available keys:', Object.keys(lightweightChart));
-                console.error('[Chart Debug] Full lightweightChart object for inspection:', lightweightChart);
-                throw new TypeError('lightweightChart.addSeries is not a function');
-            }
-            if (typeof LightweightCharts.CandlestickSeries === 'undefined') { // Check if CandlestickSeries type is available
-                console.error('[Chart Debug] LightweightCharts.CandlestickSeries is undefined. LightweightCharts object:', LightweightCharts);
-                throw new TypeError('LightweightCharts.CandlestickSeries is undefined');
-            }
-            console.log('[Chart Debug] addSeries IS a function and CandlestickSeries type IS available.');
 
-            candleSeries = lightweightChart.addSeries(LightweightCharts.CandlestickSeries, { // V5 method
+            // Using addCandlestickSeries, which is correct for v4.2.0
+            if (typeof lightweightChart.addCandlestickSeries !== 'function') {
+                console.error('[Chart Debug] lightweightChart.addCandlestickSeries IS NOT a function. Available keys on chart object:', Object.keys(lightweightChart));
+                throw new TypeError('lightweightChart.addCandlestickSeries is not a function. Ensure Lightweight Charts v3.1+ or v4.x is loaded.');
+            }
+
+            candleSeries = lightweightChart.addCandlestickSeries({
                 upColor: '#22c55e',
                 downColor: '#ef4444',
                 borderDownColor: '#ef4444',
@@ -586,7 +621,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 wickDownColor: '#ef4444',
                 wickUpColor: '#22c55e',
             });
-            console.log('[Chart Debug] Candlestick series created successfully.');
+            console.log('[Chart Debug] Candlestick series created successfully using addCandlestickSeries().');
+
+            // Check for setMarkers immediately after series creation
+            if (typeof candleSeries.setMarkers !== 'function') {
+                console.error('[Chart Debug] setMarkers is NOT a function on the candleSeries object. Available keys:', Object.keys(candleSeries));
+                throw new TypeError('candleSeries.setMarkers is not a function');
+            }
+            console.log('[Chart Debug] setMarkers IS a function on the candleSeries object.');
 
         } catch (e) {
             console.error("Error creating Lightweight Chart:", e);
@@ -605,7 +647,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
         console.log(`Loading historical data for Lightweight Chart: ${symbol} (${exchange}) with timeframe ${selectedTimeframe}`);
 
-        fetch(`/api/historical-data?symbol=${symbol}&exchange=${exchange}&interval=${selectedTimeframe}`)
+        // Replace historical-data endpoint with merged-chart-data endpoint to get both historical and intraday data
+        fetch(`/api/merged-chart-data?symbol=${symbol}&exchange=${exchange}&interval=${selectedTimeframe}`)
             .then(response => response.json())
             .then(data => {
                 if (data && data.success && data.data && Array.isArray(data.data)) {

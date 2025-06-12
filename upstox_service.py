@@ -272,10 +272,12 @@ def get_market_quote_v3_api():
     """
     Get an instance of the MarketQuoteV3Api
     """
-    config = get_configuration()
-    if not config:
+    # Create an ApiClient instance instead of just a configuration
+    api_client = get_configuration_api_client()
+    if not api_client:
         return None
-    return MarketQuoteV3Api(configuration=config)
+    # Initialize MarketQuoteV3Api with the api_client instance
+    return MarketQuoteV3Api(api_client=api_client)
 
 def get_history_v3_api():
     """
@@ -382,8 +384,7 @@ async def connect_and_stream_market_data(feed_url, instrument_keys, on_message_c
 
 def get_live_market_data(symbol, exchange="NSE_EQ"):
     """
-    Get live market data for a symbol from Upstox using V3 HTTP API.
-    This is used for initial data loading, while WebSockets handle continuous updates.
+    Get live market data for a symbol from Upstox using MarketQuoteV3 API.
 
     Args:
         symbol (str): Symbol/scrip code
@@ -397,53 +398,66 @@ def get_live_market_data(symbol, exchange="NSE_EQ"):
         return None
 
     try:
-        instrument_key = f"{exchange}:{symbol}"
-        # Using get_full_market_quote to get comprehensive data including LTP, change, OHLC etc.
-        # The API version "3.0" should be handled by the underlying SDK method.
-        # The SDK method is get_full_market_quote(symbol, api_version)
-        # However, the Upstox SDK might implicitly use the correct version or require it in ApiClient config.
-        # Let's assume the SDK handles the version or it's set globally.
+        # Format the instrument key properly for the API
+        instrument_key = f"{exchange}|{symbol}"
 
-        # The method signature for get_full_market_quote in the SDK is typically:
-        # get_full_market_quote(self, symbol, api_version, **kwargs)
-        # We need to ensure the api_version is correctly passed or configured.
-        # For safety, let's try to pass it if the method accepts it,
-        # otherwise rely on global config or SDK default.
-
-        # The Upstox client library's MarketQuoteV3Api().get_full_market_quote takes 'symbol' and 'api_version'.
-        response = market_quote_api.get_full_market_quote(
-            symbol=instrument_key,
+        # Use get_ltp with the correct parameter name 'instrument_key'
+        ltp_response = market_quote_api.get_ltp(
+            instrument_key=instrument_key
         )
 
-        if response and response.data:
-            # The structure of response.data needs to be mapped to what the frontend expects.
-            # Assuming response.data is an object with fields like last_price, change, ohlc etc.
-            # Example mapping (adjust based on actual response structure from Upstox SDK):
-            data = response.data
-            # The V3 full market quote response is nested. Example: data.market_data.ltpc
-            ltpc_data = data.get(instrument_key, {}).get('market_data', {}).get('ltpc', {})
-            ohlc_data = data.get(instrument_key, {}).get('market_data', {}).get('ohlc', {})
+        # Use get_market_quote_ohlc with the correct interval format
+        # According to the API documentation: 1d (for 1 day), I1 (for 1-minute), I30 (for 30-minute)
+        quotes_response = market_quote_api.get_market_quote_ohlc(
+            interval="1d",  # Use "1d" instead of "1day" for daily OHLC data
+            instrument_key=instrument_key
+        )
 
+        # Check if we have valid responses and extract data
+        ltp = None
+        change = None
+        percentage_change = None
+        if ltp_response and hasattr(ltp_response, 'data'):
+            # Extract LTP data
+            ltp_data = ltp_response.data.get(instrument_key, {})
+            ltp = ltp_data.get('last_price')
+
+        ohlc = {}
+        if quotes_response and hasattr(quotes_response, 'data'):
+            # Extract quote data
+            quote_data = quotes_response.data.get(instrument_key, {})
+
+            # Get OHLC data
+            ohlc = quote_data.get('ohlc', {})
+
+            # Calculate change if we have close price and LTP
+            if ltp is not None and 'close' in ohlc and ohlc['close'] is not None:
+                change = ltp - ohlc['close']
+                if ohlc['close'] > 0:
+                    percentage_change = (change / ohlc['close']) * 100
+
+        # Prepare the live data object with properly named fields matching what the UI expects
+        if ltp is not None or ohlc:
             live_data = {
-                "ltp": ltpc_data.get('ltp'),
-                "change": ltpc_data.get('ch'), # Or calculate if 'ch' is not direct change value
-                "percentage_change": ltpc_data.get('chp'),
-                "open": ohlc_data.get('open'),
-                "high": ohlc_data.get('high'),
-                "low": ohlc_data.get('low'),
-                "close": ohlc_data.get('close'), # Previous day close for ohlc
+                "ltp": ltp,
+                "last_price": ltp,  # Add this field to match what the dashboard is looking for
+                "change": change,
+                "percentage_change": percentage_change,
+                "open": ohlc.get('open'),
+                "high": ohlc.get('high'),
+                "low": ohlc.get('low'),
+                "close": ohlc.get('close'),  # Previous day close
                 "symbol": symbol,
                 "instrument_key": instrument_key
-                # Add other fields as needed by your frontend
             }
             return live_data
         else:
-            logger.warning(f"No data received from get_full_market_quote for {instrument_key}")
+            logger.warning(f"No market data received for {instrument_key}")
             return None
 
     except ApiException as e:
-        logger.error(f"ApiException when calling MarketQuoteV3Api->get_full_market_quote for {symbol}: {e}")
-        if e.body:
+        logger.error(f"ApiException when fetching market data for {symbol}: {e}")
+        if hasattr(e, 'body') and e.body:
             logger.error(f"Error body: {e.body}")
         return None
     except Exception as e:
@@ -770,3 +784,279 @@ def search_symbols(api_client, query, exchange="NSE_EQ"):
     except Exception as e:
         logger.error(f"Error in search_symbols: {str(e)}")
         return []
+
+def merge_historical_and_intraday_data(historical_data, intraday_data, interval):
+    """
+    Merge historical OHLC data with intraday data for seamless chart display
+
+    Args:
+        historical_data (list): List of OHLC candles from get_historical_data
+        intraday_data (dict or list): Intraday data can be either:
+                                      - List of OHLC candles from get_intra_day_candle_data
+                                      - Dict with live market data
+        interval (str): The interval of the historical data (e.g., "1day", "1minute")
+
+    Returns:
+        list: Merged data with intraday points appended/merged, with no duplicates
+    """
+    if historical_data is None or not historical_data:
+        logger.warning("No historical data to merge")
+        return []
+
+    if intraday_data is None:
+        logger.warning("No intraday data available to merge, returning historical data only")
+        return historical_data
+
+    # Use a dictionary to track candles by timestamp to avoid duplicates
+    # Intraday data should take precedence over historical data when timestamps match
+    candle_dict = {}
+
+    # First add all historical candles to the dictionary
+    for candle in historical_data:
+        timestamp = candle[0]
+        candle_dict[timestamp] = candle
+
+    try:
+        # Check if intraday_data is a list of candles (from get_intra_day_candle_data)
+        if isinstance(intraday_data, list):
+            logger.info(f"Merging historical data with {len(intraday_data)} intraday candles")
+
+            # Add or update with intraday candles (will override historical if timestamp matches)
+            for candle in intraday_data:
+                timestamp = candle[0]
+                candle_dict[timestamp] = candle
+
+            # Convert back to a sorted list
+            merged_data = list(candle_dict.values())
+            merged_data.sort(key=lambda x: x[0])
+
+            logger.info(f"Merged data has {len(merged_data)} candles after removing duplicates")
+            return merged_data
+
+        # Handle dict type intraday data (live market data)
+        else:
+            # Extract necessary data from intraday data dictionary
+            ltp = intraday_data.get('ltp')
+            if not ltp:
+                logger.warning("Intraday data missing LTP, cannot create current candle")
+                # Convert dictionary back to sorted list and return
+                merged_data = list(candle_dict.values())
+                merged_data.sort(key=lambda x: x[0])
+                return merged_data
+
+            # Get the timestamp for the current time
+            current_time = datetime.now()
+
+            # Format based on interval
+            if interval == '1day':
+                # Set time to beginning of the day for daily candle
+                date_str = current_time.strftime("%Y-%m-%dT00:00:00+05:30")
+            elif '1minute' in interval or '5minute' in interval or '15minute' in interval or '30minute' in interval:
+                # Set time to current minute for minute-based candles
+                # Round down to the nearest interval
+                interval_minutes = int(interval.replace('minute', ''))
+                minute_rounded = (current_time.minute // interval_minutes) * interval_minutes
+                date_str = current_time.strftime(f"%Y-%m-%dT{current_time.hour:02d}:{minute_rounded:02d}:00+05:30")
+            elif '1hour' in interval:
+                # Set time to current hour for hourly candle
+                date_str = current_time.strftime("%Y-%m-%dT%H:00:00+05:30")
+            else:
+                # Default format for other intervals
+                date_str = current_time.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+
+            # Check if we already have a candle for this timestamp
+            if date_str in candle_dict:
+                # Update the existing candle with the current price
+                existing_candle = candle_dict[date_str]
+
+                # Keep the open price from the existing candle
+                open_price = existing_candle[1]
+
+                # Update high price if current price is higher
+                high_price = max(existing_candle[2], ltp)
+
+                # Update low price if current price is lower
+                low_price = min(existing_candle[3], ltp)
+
+                # Set close price to the current price
+                close_price = ltp
+
+                # Volume may be present in index 5
+                volume = existing_candle[5] if len(existing_candle) > 5 else 0
+
+                # Update the candle
+                candle_dict[date_str] = [date_str, open_price, high_price, low_price, close_price, volume]
+            else:
+                # Add a new candle for the current time period
+                logger.info(f"Adding new candle at {date_str} with price {ltp}")
+
+                # For a new candle, set OHLC to the current price
+                new_candle = [date_str, ltp, ltp, ltp, ltp, 0]
+                candle_dict[date_str] = new_candle
+
+            # Convert dictionary back to sorted list
+            merged_data = list(candle_dict.values())
+            merged_data.sort(key=lambda x: x[0])
+            return merged_data
+
+    except Exception as e:
+        logger.error(f"Error merging historical and intraday data: {e}", exc_info=True)
+
+        # In case of error, convert whatever we have in the dictionary to a list
+        merged_data = list(candle_dict.values())
+        merged_data.sort(key=lambda x: x[0])
+        return merged_data
+def get_intraday_data(symbol, interval="1minute", exchange="NSE_EQ"):
+    """
+    Get intraday OHLC data for a symbol from Upstox using V3 API's get_intra_day_candle_data method
+
+    Args:
+        symbol (str): Symbol/scrip code
+        interval (str): Candle interval (e.g., "1minute", "5minute", "15minute", "30minute", "1hour")
+        exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
+
+    Returns:
+        list: List of candles with OHLC values or None if an error occurs
+    """
+    history_api = get_history_v3_api()
+    if not history_api:
+        logger.error("Failed to create HistoryV3Api instance for intraday data")
+        return None
+
+    # Map interval to the format required by the Upstox API for intraday data
+    interval_mapping = {
+        "1minute": {"unit": "minutes", "interval": 1},
+        "5minute": {"unit": "minutes", "interval": 5},
+        "15minute": {"unit": "minutes", "interval": 15},
+        "30minute": {"unit": "minutes", "interval": 30},
+        "1hour": {"unit": "hours", "interval": 1},
+        "1day": {"unit": "days", "interval": 1}
+    }
+
+    # Get the unit and interval from the mapping
+    mapped_params = interval_mapping.get(interval)
+    if not mapped_params:
+        logger.error(f"Invalid interval format for intraday data: {interval}")
+        return None
+
+    unit = mapped_params["unit"]
+    interval_value = mapped_params["interval"]
+
+    try:
+        # Format instrument key properly for the API
+        instrument_key = f"{exchange}|{symbol}"
+
+        logger.info(f"Fetching intraday data for {instrument_key} with unit={unit}, interval={interval_value}")
+
+        # Call the intraday candle data API method
+        response = history_api.get_intra_day_candle_data(
+            instrument_key=instrument_key,
+            unit=unit,
+            interval=interval_value
+        )
+        print(response)
+
+        # Process the response data
+        if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
+            logger.info(f"Successfully retrieved intraday data for {symbol}, got {len(response.data.candles)} candles")
+            return response.data.candles
+        else:
+            logger.warning(f"No intraday candle data in response for {symbol}")
+            return None
+
+    except ApiException as e:
+        logger.error(f"API Exception when fetching intraday data: {e}")
+        if hasattr(e, 'body') and e.body:
+            logger.error(f"Error body: {e.body}")
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching intraday data for {symbol}: {e}", exc_info=True)
+        return None
+def get_intra_day_candle_data(symbol, interval="5minute", exchange="NSE_EQ"):
+    """
+    Get intraday candle data for a symbol from Upstox V3 API
+
+    Args:
+        symbol (str): Symbol/scrip code
+        interval (str): Candle interval (e.g., "1minute", "5minute", "15minute", "30minute", "1hour")
+        exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
+
+    Returns:
+        list: List of candles with timestamp and OHLCV values or None if an error occurs
+    """
+    # Daily intervals like 1day, 1week, 1month are not supported for intraday data
+    if interval in ["1day", "1week", "1month"]:
+        logger.info(f"Intraday data not available for interval {interval}. Use historical data instead.")
+        return None
+
+    history_api = get_history_v3_api()
+    if not history_api:
+        logger.error("Failed to create HistoryV3Api instance for intraday candle data")
+        return None
+
+    # Map interval to the format required by the Upstox API
+    interval_mapping = {
+        "1minute": {"unit": "minutes", "interval": 1},
+        "3minute": {"unit": "minutes", "interval": 3},
+        "5minute": {"unit": "minutes", "interval": 5},
+        "15minute": {"unit": "minutes", "interval": 15},
+        "30minute": {"unit": "minutes", "interval": 30},
+        "1hour": {"unit": "hours", "interval": 1}
+    }
+
+    # Get the unit and interval from the mapping
+    mapped_params = interval_mapping.get(interval)
+    if not mapped_params:
+        logger.error(f"Invalid interval format for intraday candle data: {interval}")
+        return None
+
+    unit = mapped_params["unit"]
+    interval_value = mapped_params["interval"]
+
+    try:
+        # Format instrument key properly for the API
+        instrument_key = f"{exchange}|{symbol}"
+
+        logger.info(f"Fetching intraday candle data for {instrument_key} with unit={unit}, interval={interval_value}")
+
+        # Call the API to get intraday candle data
+        response = history_api.get_intra_day_candle_data(
+            instrument_key=instrument_key,
+            unit=unit,
+            interval=interval_value
+        )
+
+        # Process the response data
+        if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
+            candles_data = response.data.candles
+            logger.info(f"Successfully retrieved intraday candle data for {symbol}, got {len(candles_data)} candles")
+
+            # Process and format the candle data to match the expected format
+            formatted_candles = []
+            for candle in candles_data:
+                # Each candle should be a list with [timestamp, open, high, low, close, volume, oi]
+                # The timestamp format should be "YYYY-MM-DDThh:mm:ss+05:30"
+                formatted_candle = [
+                    candle[0],           # timestamp
+                    float(candle[1]),    # open
+                    float(candle[2]),    # high
+                    float(candle[3]),    # low
+                    float(candle[4]),    # close
+                    int(candle[5]),      # volume
+                    0                    # oi (open interest) - defaulting to 0 if not available
+                ]
+                formatted_candles.append(formatted_candle)
+
+            return formatted_candles
+        else:
+            logger.warning(f"No intraday candle data in response for {symbol}")
+            return None
+
+    except ApiException as e:
+        logger.error(f"API Exception when fetching intraday candle data: {e}")
+        if hasattr(e, 'body') and e.body:
+            logger.error(f"Error body: {e.body}")
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching intraday candle data for {symbol}: {e}", exc_info=True)
+        return None

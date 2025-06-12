@@ -762,5 +762,101 @@ def fetch_historical_data():
         logger.error(f"Error fetching historical data: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/merged-chart-data')
+@require_login
+def fetch_merged_chart_data():
+    """API endpoint to fetch and merge historical and intraday data for a complete chart view"""
+    try:
+        symbol = request.args.get('symbol')
+        exchange = request.args.get('exchange', 'NSE_EQ')
+        interval = request.args.get('interval', '1day')
+        from_date = request.args.get('from_date')
+        to_date = request.args.get('to_date')
+
+        if not symbol:
+            return jsonify({"success": False, "error": "Symbol is required"}), 400
+
+        # Get Upstox client
+        upstox_api_client = upstox_service.get_configuration_api_client()
+        if not upstox_api_client:
+            logger.error("Failed to get Upstox ApiClient for chart data.")
+            return jsonify({"success": False, "error": "Upstox authentication failed"}), 401
+
+        # Define available intervals for both data sources
+        intraday_intervals = ["1minute", "3minute", "5minute", "15minute", "30minute", "1hour"]
+        historical_intervals = ["1minute", "3minute", "5minute", "15minute", "30minute", "1hour", "1day", "1week", "1month"]
+
+        # Determine if we can fetch data from each source based on the requested interval
+        fetch_intraday = interval in intraday_intervals  # Only fetch intraday for supported intervals
+        fetch_historical = interval in historical_intervals
+
+        historical_data = None
+        intraday_data = None
+
+        logger.info(f"Fetching data for {symbol} with interval {interval}")
+
+        # Step 1: Get historical data using the requested interval
+        if fetch_historical:
+            historical_data = upstox_service.get_historical_data(
+                symbol=symbol,
+                interval=interval,
+                from_date=from_date,
+                to_date=to_date,
+                exchange=exchange
+            )
+
+            if historical_data:
+                logger.info(f"Retrieved {len(historical_data)} historical candles with interval {interval}")
+            else:
+                logger.warning(f"No historical data available for {symbol} with interval {interval}")
+
+        # Step 2: Get intraday data for recent updates (only for supported intervals)
+        if fetch_intraday:
+            intraday_data = upstox_service.get_intra_day_candle_data(
+                symbol=symbol,
+                interval=interval,
+                exchange=exchange
+            )
+
+            if intraday_data:
+                logger.info(f"Retrieved {len(intraday_data)} intraday candles with interval {interval}")
+            else:
+                logger.info(f"No intraday data available for {symbol} with interval {interval}")
+        else:
+            # For intervals like "1day", "1week", "1month", intraday data isn't available
+            logger.info(f"Intraday data not supported for interval {interval}, using historical data only")
+
+        # Step 3: Handle case where we only have one data source
+        if not historical_data and not intraday_data:
+            return jsonify({"success": False, "error": f"No data available for {symbol} with interval {interval}"}), 404
+
+        if not historical_data and intraday_data:
+            logger.info(f"Only intraday data available for {interval}")
+            return jsonify({"success": True, "data": intraday_data})
+
+        if historical_data and not intraday_data:
+            logger.info(f"Only historical data available for {interval}")
+            return jsonify({"success": True, "data": historical_data})
+
+        # Step 4: Merge the data when both sources are available
+        logger.info(f"Merging historical and intraday data for {interval}")
+        merged_data = upstox_service.merge_historical_and_intraday_data(
+            historical_data=historical_data,
+            intraday_data=intraday_data,
+            interval=interval
+        )
+
+        if not merged_data:
+            # If merge fails, return historical data as fallback
+            logger.warning("Merge failed, returning historical data as fallback")
+            return jsonify({"success": True, "data": historical_data})
+
+        logger.info(f"Returning merged data with {len(merged_data)} candles")
+        return jsonify({"success": True, "data": merged_data})
+
+    except Exception as e:
+        logger.error(f"Error fetching merged chart data: {str(e)}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')
