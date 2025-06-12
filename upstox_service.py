@@ -810,7 +810,6 @@ def merge_historical_and_intraday_data(historical_data, intraday_data, interval)
     # Use a dictionary to track candles by timestamp to avoid duplicates
     # Intraday data should take precedence over historical data when timestamps match
     candle_dict = {}
-
     # First add all historical candles to the dictionary
     for candle in historical_data:
         timestamp = candle[0]
@@ -1060,3 +1059,219 @@ def get_intra_day_candle_data(symbol, interval="5minute", exchange="NSE_EQ"):
     except Exception as e:
         logger.error(f"Error fetching intraday candle data for {symbol}: {e}", exc_info=True)
         return None
+def extract_ltpc_from_feed(feed_response):
+    """
+    Extract LTPC (Last Traded Price & Change) data from the market data feed response
+
+    Args:
+        feed_response: FeedResponse from the market data WebSocket
+
+    Returns:
+        dict: Dictionary with instrument_key as key and LTPC data as value
+    """
+    if not feed_response or not hasattr(feed_response, 'feeds'):
+        return {}
+
+    ltpc_data = {}
+
+    try:
+        for instrument_key, feed_data in feed_response.feeds.items():
+            if feed_data.ff.marketFF.ltpc:
+                ltpc = feed_data.ff.marketFF.ltpc
+                ltpc_data[instrument_key] = {
+                    "ltp": ltpc.ltp,                     # Last traded price
+                    "change": ltpc.ch,                   # Change from previous close
+                    "percentage_change": ltpc.chp,       # Change percentage
+                    "close_price": ltpc.cp,              # Close price (previous day)
+                    "last_trade_time": ltpc.ltt,         # Last trade time (timestamp)
+                    "volume": ltpc.v if hasattr(ltpc, 'v') else None,  # Volume (if available)
+                    "atp": ltpc.atp if hasattr(ltpc, 'atp') else None  # Average traded price (if available)
+                }
+
+        if ltpc_data:
+            logger.info(f"Extracted LTPC data for {len(ltpc_data)} instruments from market data feed")
+        return ltpc_data
+
+    except Exception as e:
+        logger.error(f"Error extracting LTPC data from market feed: {e}", exc_info=True)
+        return {}
+
+def get_full_market_quote(symbols=None, instrument_keys=None, exchange="NSE_EQ"):
+    """
+    Get full market quote data for given symbols/instrument keys from Upstox API
+
+    Args:
+        symbols (list): List of symbol strings (optional)
+        instrument_keys (list): List of instrument keys (optional)
+        exchange (str): Exchange code, default is NSE_EQ
+
+    Returns:
+        dict: Dictionary with instrument_key as key and full market data as value
+    """
+    market_quote_api = get_market_quote_v3_api()
+    if not market_quote_api:
+        logger.error("Failed to create MarketQuoteV3Api instance for full market quote")
+        return None
+
+    try:
+        # If symbols are provided but not instrument_keys, convert symbols to instrument_keys
+        if symbols and not instrument_keys:
+            instrument_keys = []
+            for symbol in symbols:
+                instrument_keys.append(f"{exchange}|{symbol}")
+
+        # If no instrument_keys are provided, return empty result
+        if not instrument_keys:
+            logger.warning("No symbols or instrument_keys provided for get_full_market_quote")
+            return {}
+
+        logger.info(f"Fetching full market quote for instrument keys: {instrument_keys}")
+
+        # Make API call to get full market quote
+        # According to the documentation, instrument_key can be a list
+        response = market_quote_api.get_full_market_quote(
+            instrument_key=instrument_keys
+        )
+
+        # Process response
+        if response and hasattr(response, 'data'):
+            result = response.data
+            logger.info(f"Successfully fetched full market quote for {len(result)} instruments")
+
+            # Process the data to ensure consistent format for frontend use
+            processed_data = {}
+            for key, quote in result.items():
+                # Extract relevant data fields based on the API documentation
+                processed_data[key] = {
+                    "instrument_key": key,
+                    "last_price": quote.get("last_price"),
+                    "ohlc": quote.get("ohlc", {}),
+                    "depth": {
+                        "buy": quote.get("depth", {}).get("buy", []),
+                        "sell": quote.get("depth", {}).get("sell", [])
+                    },
+                    "timestamp": quote.get("timestamp"),
+                    "volume": quote.get("volume"),
+                    "oi": quote.get("oi"),  # Open Interest
+                    "oi_day_high": quote.get("oi_day_high"),
+                    "oi_day_low": quote.get("oi_day_low"),
+                    "total_buy_qty": quote.get("total_buy_quantity"),
+                    "total_sell_qty": quote.get("total_sell_quantity"),
+                    "lower_circuit": quote.get("lower_circuit_limit"),
+                    "upper_circuit": quote.get("upper_circuit_limit"),
+                    "atp": quote.get("atp"),  # Average Traded Price
+                    "change": quote.get("change"),
+                    "change_percent": quote.get("percentage_change")
+                }
+
+            return processed_data
+        else:
+            logger.warning("No data in full market quote response")
+            return {}
+
+    except ApiException as e:
+        logger.error(f"API Exception when fetching full market quote: {e}")
+        if hasattr(e, 'body') and e.body:
+            logger.error(f"Error body: {e.body}")
+        return {}
+    except Exception as e:
+        logger.error(f"Error fetching full market quote: {e}", exc_info=True)
+        return {}
+def get_full_market_quote_v2(symbols=None, instrument_keys=None, exchange="NSE_EQ"):
+    """
+    Get full market quote data using direct HTTP request to V2 API endpoint
+
+    Args:
+        symbols (list): List of symbol strings (optional)
+        instrument_keys (list): List of instrument keys (optional)
+        exchange (str): Exchange code, default is NSE_EQ
+
+    Returns:
+        dict: Dictionary with instrument_key as key and full market data as value
+    """
+    try:
+        # Get authentication token
+        token = get_access_token()
+        if not token:
+            logger.error("Failed to get access token for full market quote V2")
+            return None
+
+        # If symbols are provided but not instrument_keys, convert symbols to instrument_keys
+        if symbols and not instrument_keys:
+            instrument_keys = []
+            for symbol in symbols:
+                instrument_keys.append(f"{exchange}|{symbol}")
+
+        # If no instrument_keys are provided, return empty result
+        if not instrument_keys:
+            logger.warning("No symbols or instrument_keys provided for get_full_market_quote_v2")
+            return {}
+
+        logger.info(f"Fetching full market quote from V2 API for instrument keys: {instrument_keys}")
+
+        # Build URL with query parameters for instrument_keys
+        url = "https://api.upstox.com/v2/market-quote/quotes"
+        params = {'instrument_keys': ','.join(instrument_keys)}
+
+        # Set up headers with authentication
+        headers = {
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {token}'
+        }
+
+        # Make the request
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()  # Raise exception for HTTP errors
+
+        # Process response
+        json_response = response.json()
+        if 'data' in json_response:
+            result = json_response['data']
+            logger.info(f"Successfully fetched full market quote from V2 API for {len(result)} instruments")
+
+            # Process the data to ensure consistent format for frontend use
+            processed_data = {}
+            for quote in result:
+                key = quote.get("instrument_key")
+                if not key:
+                    continue
+
+                # Extract relevant data fields from V2 API response
+                processed_data[key] = {
+                    "instrument_key": key,
+                    "last_price": quote.get("last_price"),
+                    "ohlc": {
+                        "open": quote.get("open_price"),
+                        "high": quote.get("high_price"),
+                        "low": quote.get("low_price"),
+                        "close": quote.get("close_price")
+                    },
+                    "depth": {
+                        "buy": quote.get("depth", {}).get("buy", []),
+                        "sell": quote.get("depth", {}).get("sell", [])
+                    },
+                    "timestamp": quote.get("timestamp"),
+                    "volume": quote.get("volume"),
+                    "oi": quote.get("oi"),  # Open Interest
+                    "oi_day_high": quote.get("oi_day_high"),
+                    "oi_day_low": quote.get("oi_day_low"),
+                    "total_buy_qty": quote.get("total_buy_quantity"),
+                    "total_sell_qty": quote.get("total_sell_quantity"),
+                    "lower_circuit": quote.get("lower_circuit_limit"),
+                    "upper_circuit": quote.get("upper_circuit_limit"),
+                    "atp": quote.get("atp"),  # Average Traded Price
+                    "change": quote.get("change"),
+                    "change_percent": quote.get("change_percent")
+                }
+
+            return processed_data
+        else:
+            logger.warning("No data in full market quote V2 response")
+            return {}
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request Exception when fetching full market quote from V2 API: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"Error fetching full market quote from V2 API: {e}", exc_info=True)
+        return {}

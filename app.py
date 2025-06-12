@@ -61,6 +61,9 @@ os.makedirs(WATCHLIST_DIR, exist_ok=True)
 upstox_ws_thread = None
 upstox_subscribed_instrument_keys = set()  # Stores keys like "NSE_EQ|INE002A01018"
 
+# Global variable to store watchlist LTPC updates
+watchlist_ltpc_data = {}
+
 def get_watchlist_filepath(user_id):
     return os.path.join(WATCHLIST_DIR, f"{user_id}_watchlist.json")
 
@@ -266,7 +269,11 @@ def handle_subscribe_upstox_market_data(data):
         return
 
     def on_upstox_message_socketio(feed_response):
+        # Process the feed for regular Socket.IO updates
         process_upstox_feed(feed_response, socketio.emit)
+
+        # Also extract LTPC data and update watchlist
+        on_upstox_market_data(feed_response)
 
     if upstox_ws_thread and upstox_ws_thread.is_alive():
         logger.info("Stopping existing Upstox WebSocket thread for re-subscription.")
@@ -518,18 +525,78 @@ def logout():
 @app.route('/api/watchlist/load')
 @require_login
 def load_watchlist():
-    """API endpoint to load a user's watchlist"""
+    """API endpoint to load a user's watchlist with full market quote data"""
     try:
         # Use user_id from session or a default if not available
         user_id = session.get('user_profile', {}).get('user_id', 'default_user')
 
         watchlist_path = get_watchlist_filepath(user_id)
+        watchlist_items = []
+        instrument_keys = []
 
         if os.path.exists(watchlist_path):
             with open(watchlist_path, 'r') as f:
                 watchlist_data = json.load(f)
-            logger.info(f"Loaded watchlist for user {user_id}")
-            return jsonify({"success": True, "watchlist": watchlist_data})
+
+            # First pass: Create basic watchlist items and collect instrument_keys
+            for item in watchlist_data:
+                # Handle both string format and object format in watchlist
+                if isinstance(item, str):
+                    symbol = item
+                    instrument_key = f"NSE_EQ|{symbol}"  # Default format if only symbol is saved
+                    enhanced_item = {"symbol": symbol, "instrument_key": instrument_key}
+                else:
+                    # Item is already an object
+                    enhanced_item = item
+                    symbol = item.get('symbol', item.get('tradingsymbol'))
+                    instrument_key = item.get('instrument_key', f"NSE_EQ|{symbol}")
+
+                # Add to watchlist items and collect instrument_key for bulk fetching
+                watchlist_items.append(enhanced_item)
+                if instrument_key:
+                    instrument_keys.append(instrument_key)
+
+            # Only fetch market data if we have instrument keys and user is authenticated with Upstox
+            if instrument_keys and session.get('upstox_authenticated', False):
+                try:
+                    # Fetch full market quote data for all instruments at once
+                    market_data = upstox_service.get_full_market_quote_v2(instrument_keys=instrument_keys)
+                    if market_data:
+                        # Second pass: Enhance watchlist items with market data
+                        for item in watchlist_items:
+                            instrument_key = item.get('instrument_key')
+                            if instrument_key and instrument_key in market_data:
+                                quote = market_data[instrument_key]
+
+                                # Add market data to each watchlist item
+                                item.update({
+                                    "ltp": quote.get('last_price'),
+                                    "last_price": quote.get('last_price'),
+                                    "open": quote.get('ohlc', {}).get('open'),
+                                    "high": quote.get('ohlc', {}).get('high'),
+                                    "low": quote.get('ohlc', {}).get('low'),
+                                    "close": quote.get('ohlc', {}).get('close'),
+                                    "change": quote.get('change'),
+                                    "percentage_change": quote.get('change_percentage'),
+                                    "volume": quote.get('volume'),
+                                    "last_trade_time": quote.get('last_trade_time'),
+                                    "bid": quote.get('depth', {}).get('buy', [{}])[0].get('price') if quote.get('depth', {}).get('buy') else None,
+                                    "ask": quote.get('depth', {}).get('sell', [{}])[0].get('price') if quote.get('depth', {}).get('sell') else None,
+                                    "total_buy_qty": quote.get('total_buy_qty'),
+                                    "total_sell_qty": quote.get('total_sell_qty')
+                                })
+
+                        logger.info(f"Enhanced watchlist with full market quote data for {len(market_data)} instruments")
+                    else:
+                        logger.warning("No market data returned from get_full_market_quote")
+                except Exception as e:
+                    logger.error(f"Error fetching full market quote data: {e}")
+                    # Continue with basic watchlist items without market data
+            else:
+                logger.info(f"Skipping market data fetch: Found {len(instrument_keys)} instruments, Upstox auth: {session.get('upstox_authenticated', False)}")
+
+            logger.info(f"Loaded watchlist for user {user_id}, real-time updates will be provided by market feed")
+            return jsonify({"success": True, "watchlist": watchlist_items})
         else:
             logger.info(f"No existing watchlist found for user {user_id}")
             return jsonify({"success": True, "watchlist": []})
@@ -857,6 +924,32 @@ def fetch_merged_chart_data():
     except Exception as e:
         logger.error(f"Error fetching merged chart data: {str(e)}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
+
+def on_upstox_market_data(feed_response):
+    """
+    Callback function for processing market data from Upstox WebSocket.
+    Extracts LTPC data and updates the watchlist data.
+
+    Args:
+        feed_response: FeedResponse object from Upstox WebSocket
+    """
+    global watchlist_ltpc_data
+
+    # Use the extract_ltpc_from_feed function to get LTPC data
+    ltpc_data = upstox_service.extract_ltpc_from_feed(feed_response)
+
+    if ltpc_data:
+        # Update the global watchlist LTPC data
+        watchlist_ltpc_data.update(ltpc_data)
+
+        # Emit the updated data to connected clients via Socket.IO
+        for instrument_key, data in ltpc_data.items():
+            data['instrument_key'] = instrument_key
+            socketio.emit('ltpc_update', data)
+
+        logger.info(f"Updated LTPC data for {len(ltpc_data)} instruments and broadcast to clients")
+    else:
+        logger.debug("No LTPC data extracted from market feed")
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')

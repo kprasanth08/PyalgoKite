@@ -725,6 +725,80 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Initial render in case watchlist is empty or fails to load fully
     renderWatchlist();
+
+    // --- Socket.IO LTPC (Last Traded Price & Change) live updates ---
+    socket.on('ltpc_update', function(data) {
+        // Skip if we don't have the instrument in our watchlist
+        if (!data.instrument_key || !watchlist[data.instrument_key]) {
+            return;
+        }
+
+        // Update the watchlist object with the latest LTPC data
+        const item = watchlist[data.instrument_key];
+        item.ltp = data.ltp;
+        item.last_price = data.ltp; // Keep both fields updated for compatibility
+        item.change = data.change;
+        item.percentage_change = data.percentage_change;
+        item.close_price = data.close_price;
+        item.last_trade_time = data.last_trade_time;
+
+        // Find the watchlist item in the DOM
+        const elementId = `watchlist-item-${data.instrument_key.replace(/[|]/g, '-')}`;
+        const element = document.getElementById(elementId);
+        if (element) {
+            // Update the price display
+            const ltpElement = element.querySelector('.symbol-ltp');
+            if (ltpElement) {
+                ltpElement.textContent = data.ltp.toFixed(2);
+            }
+
+            // Update the change display
+            const changeElement = element.querySelector('.symbol-change');
+            if (changeElement) {
+                // Format the change value
+                const changeValue = data.change.toFixed(2);
+                const changeText = changeValue > 0 ? `+${changeValue}` : changeValue;
+                changeElement.textContent = changeText;
+
+                // Update the color
+                const isPositive = data.change > 0;
+                changeElement.className = `symbol-change ${isPositive ? 'text-positive' : 'text-negative'}`;
+            }
+
+            // Update percentage change
+            const pctChangeElement = element.querySelector('.symbol-percentage-change');
+            if (pctChangeElement) {
+                const pctValue = data.percentage_change.toFixed(2);
+                const pctText = pctValue > 0 ? `+${pctValue}%` : `${pctValue}%`;
+                pctChangeElement.textContent = pctText;
+
+                // Update the color
+                const isPositive = data.percentage_change > 0;
+                pctChangeElement.className = `symbol-percentage-change ${isPositive ? 'text-positive' : 'text-negative'}`;
+            }
+
+            // Add a subtle flash effect (optional)
+            element.classList.add('bg-gray-700');
+            setTimeout(() => {
+                element.classList.remove('bg-gray-700');
+            }, 300);
+        }
+
+        // If this is the active symbol, update the chart title as well
+        if (data.instrument_key === activeInstrumentKey && chartSymbolHeader) {
+            const symbol = item.symbol || item.tradingsymbol;
+            const priceText = data.ltp.toFixed(2);
+            const changeText = data.change > 0 ? `+${data.change.toFixed(2)}` : data.change.toFixed(2);
+            const pctText = data.percentage_change > 0 ? `+${data.percentage_change.toFixed(2)}%` : `${data.percentage_change.toFixed(2)}%`;
+            const colorClass = data.change > 0 ? 'text-positive' : 'text-negative';
+
+            chartSymbolHeader.innerHTML = `
+                ${symbol}
+                <span class="text-lg ml-2">${priceText}</span>
+                <span class="text-sm ml-2 ${colorClass}">${changeText} (${pctText})</span>
+            `;
+        }
+    });
 });
 </script>
 {% endblock %}
