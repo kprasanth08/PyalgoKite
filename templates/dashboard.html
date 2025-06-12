@@ -1,65 +1,16 @@
 {% extends 'layout.html' %}
 
 {% block extra_head %}
-<style>
-    /* Ensure chart takes full height of its container */
-    #chartContainer, #chart {
-        height: 100%;
-        width: 100%;
-    }
-    .watchlist-item {
-        /* transition: background-color 0.2s ease-in-out; */ /* Optional: for smoother hover */
-    }
-    .watchlist-item:hover {
-        background-color: #374151; /* gray-700 for hover, slightly lighter than panel bg */
-    }
-    .active-symbol {
-        background-color: #3b82f6; /* blue-500 for active */
-    }
-    .active-symbol .symbol-name,
-    .active-symbol .symbol-ltp,
-    .active-symbol .symbol-description, /* Added .symbol-description here */
-    .active-symbol .symbol-change,
-    .active-symbol .symbol-percentage-change {
-        color: #ffffff; /* White text for active symbol */
-    }
-
-    .text-positive {
-        color: #22c55e; /* green-500 */
-    }
-    .text-negative {
-        color: #ef4444; /* red-500 */
-    }
-    /* Custom scrollbar for webkit browsers */
-    .custom-scrollbar::-webkit-scrollbar {
-        width: 6px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-track {
-        background: #1f2937; /* gray-800 */
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: #4b5563; /* gray-600 */
-        border-radius: 3px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: #6b7280; /* gray-500 */
-    }
-
-    /* Custom width and height for watchlist panel */
-    .w-1\/4 {
-        width: 25%;
-        height: 80vh;
-    }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 {% endblock %}
 
 {% block content %}
-<div class="flex flex-col h-[80vh] bg-gray-900 text-gray-300 p-4 gap-4">
-    <div class="flex-none">
+<div class="dashboard-container h-[80vh] bg-gray-900 text-gray-300 p-4">
+    <div class="flex-none w-full mb-4">
         <h1 class="text-2xl font-semibold text-gray-100">Trading Dashboard</h1>
     </div>
-    <div class="flex flex-grow gap-4 overflow-hidden">
-        <div class="w-1/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-3">
+    <div class="panels-container flex-grow overflow-hidden">
+        <div class="w-1/5 flex flex-col bg-gray-800 shadow-lg rounded-lg p-3">
             <h3 class="text-lg font-semibold text-gray-100 mb-2 px-1">Market Watch</h3>
             <div class="mb-3 px-1">
                 <input type="text" id="symbolSearch" class="w-full p-2 border border-gray-600 bg-gray-700 text-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder="Search NSE Equities...">
@@ -74,7 +25,7 @@
         </div>
 
         <!-- Right Panel: Chart -->
-        <div class="w-3/4 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4">
+        <div class="w-4/5 flex flex-col bg-gray-800 shadow-lg rounded-lg p-4">
             <div class="flex-none flex justify-between items-center mb-3">
                 <h3 id="chartSymbol" class="text-lg font-semibold text-gray-100">Live Chart</h3>
                 <div class="flex items-center space-x-2">

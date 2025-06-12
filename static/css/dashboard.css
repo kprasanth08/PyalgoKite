@@ -1,0 +1,86 @@
+/* Dashboard styles */
+
+/* Ensure chart takes full height of its container */
+#chartContainer, #chart {
+    height: 100%;
+    width: 100%;
+}
+
+.watchlist-item {
+    /* transition: background-color 0.2s ease-in-out; */ /* Optional: for smoother hover */
+}
+
+.watchlist-item:hover {
+    background-color: #374151; /* gray-700 for hover, slightly lighter than panel bg */
+}
+
+.active-symbol {
+    background-color: #3b82f6; /* blue-500 for active */
+}
+
+.active-symbol .symbol-name,
+.active-symbol .symbol-ltp,
+.active-symbol .symbol-description,
+.active-symbol .symbol-change,
+.active-symbol .symbol-percentage-change {
+    color: #ffffff; /* White text for active symbol */
+}
+
+.text-positive {
+    color: #22c55e; /* green-500 */
+}
+
+.text-negative {
+    color: #ef4444; /* red-500 */
+}
+
+/* Custom scrollbar for webkit browsers */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: #1f2937; /* gray-800 */
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #4b5563; /* gray-600 */
+    border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #6b7280; /* gray-500 */
+}
+
+/* Custom width and height for watchlist panel */
+.w-1\/5 {
+    width: 20%;
+    height: 80vh;
+}
+
+/* Custom width for chart panel */
+.w-4\/5 {
+    width: 80%;
+}
+
+/* Full width dashboard container */
+.dashboard-container {
+    width: 85vw;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* Center the panels container */
+.panels-container {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+}
+
+/* Container with max width */
+.container {
+    max-width: 90vw;
+}
