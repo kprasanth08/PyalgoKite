@@ -60,6 +60,7 @@ os.makedirs(WATCHLIST_DIR, exist_ok=True)
 # Global variables for Upstox WebSocket
 upstox_ws_thread = None
 upstox_subscribed_instrument_keys = set()  # Stores keys like "NSE_EQ|INE002A01018"
+upstox_ws_shutdown_event = None # Will be a threading.Event
 
 # Global variable to store watchlist LTPC updates
 watchlist_ltpc_data = {}
@@ -229,16 +230,42 @@ def process_upstox_feed(feed_response, emit_callback):
 @socketio.on('subscribe_upstox_market_data')
 @require_login
 def handle_subscribe_upstox_market_data(data):
-    global upstox_ws_thread, upstox_subscribed_instrument_keys
+    global upstox_ws_thread, upstox_subscribed_instrument_keys, upstox_ws_shutdown_event
 
     instrument_keys_to_subscribe = data.get('instrument_keys', [])
-    if not isinstance(instrument_keys_to_subscribe, list) or not instrument_keys_to_subscribe:
+    if not isinstance(instrument_keys_to_subscribe, list): # Added check for empty list as well
         logger.warning("Invalid or empty instrument_keys for Upstox subscription.")
-        emit('upstox_market_data_error', {'error': 'Invalid instrument keys provided.'})
+        emit('upstox_market_data_error', {'error': 'Invalid or empty instrument keys provided.'})
         return
 
     logger.info(f"Request to subscribe/update Upstox market data for: {instrument_keys_to_subscribe}")
 
+    # --- Shutdown existing thread if running ---
+    if upstox_ws_thread and upstox_ws_thread.is_alive():
+        logger.info("Attempting to stop existing Upstox WebSocket thread.")
+        if upstox_ws_shutdown_event:
+            upstox_ws_shutdown_event.set()  # Signal the async function in the thread to stop
+
+        upstox_ws_thread.join(timeout=5.0)  # Wait for the thread to finish
+        if upstox_ws_thread.is_alive():
+            logger.warning("Upstox WebSocket thread did not stop in time after join. It might be stuck.")
+        else:
+            logger.info("Existing Upstox WebSocket thread has been joined.")
+        upstox_ws_thread = None # Clear the old thread reference
+    upstox_ws_shutdown_event = None # Clear or will be reset
+
+    # Update current subscriptions to the new set
+    new_subscription_set = set(instrument_keys_to_subscribe)
+    upstox_subscribed_instrument_keys = new_subscription_set
+
+    # If no instruments to subscribe to after update, ensure everything is stopped and return
+    if not upstox_subscribed_instrument_keys:
+        logger.info("No instruments to subscribe to for Upstox WebSocket. Connection will remain closed.")
+        # upstox_ws_thread and upstox_ws_shutdown_event are already None or will be.
+        emit('upstox_market_data_status', {'status': 'No instruments for Upstox WebSocket subscription. Connection closed.'})
+        return
+
+    # --- Proceed with new connection/subscription ---
     upstox_api_client = upstox_service.get_configuration_api_client()
     if not upstox_api_client:
         logger.error("Failed to get Upstox ApiClient for WebSocket.")
@@ -246,40 +273,21 @@ def handle_subscribe_upstox_market_data(data):
         return
 
     feed_url = upstox_service.get_market_data_feed_authorize_url(upstox_api_client)
+    logger.debug(f"Feed URL: {feed_url}")
     if not feed_url:
         logger.error("Failed to get Upstox market data feed URL.")
         emit('upstox_market_data_error', {'error': 'Failed to get market data feed URL.'})
         return
 
-    new_subscription_set = set(instrument_keys_to_subscribe)
-
-    if new_subscription_set == upstox_subscribed_instrument_keys and upstox_ws_thread and upstox_ws_thread.is_alive():
-        logger.info("Upstox subscriptions unchanged and WebSocket thread is alive. No action needed.")
-        emit('upstox_market_data_status', {
-            'status': f'Already subscribed to {list(upstox_subscribed_instrument_keys)} via active WebSocket.'
-        })
-        return
-
-    upstox_subscribed_instrument_keys = new_subscription_set
-    if not upstox_subscribed_instrument_keys:
-        logger.info("No instruments to subscribe to for Upstox WebSocket. Stopping thread if running.")
-        if upstox_ws_thread and upstox_ws_thread.is_alive():
-            pass
-        emit('upstox_market_data_status', {'status': 'No instruments for Upstox WebSocket subscription.'})
-        return
-
+    # Callback for processing messages from the WebSocket service
     def on_upstox_message_socketio(feed_response):
-        # Process the feed for regular Socket.IO updates
         process_upstox_feed(feed_response, socketio.emit)
-
-        # Also extract LTPC data and update watchlist
-        on_upstox_market_data(feed_response)
-
-    if upstox_ws_thread and upstox_ws_thread.is_alive():
-        logger.info("Stopping existing Upstox WebSocket thread for re-subscription.")
-        pass
+        on_upstox_market_data(feed_response) # For LTPC updates
 
     logger.info(f"Starting new Upstox WebSocket thread for instruments: {list(upstox_subscribed_instrument_keys)}")
+
+    # Create a new threading.Event for the new thread
+    upstox_ws_shutdown_event = threading.Event()
 
     def run_websocket_loop_in_thread():
         loop = asyncio.new_event_loop()
@@ -288,13 +296,14 @@ def handle_subscribe_upstox_market_data(data):
             loop.run_until_complete(upstox_service.connect_and_stream_market_data(
                 feed_url,
                 list(upstox_subscribed_instrument_keys),
-                on_upstox_message_socketio
+                on_upstox_message_socketio,
+                upstox_ws_shutdown_event  # Pass the threading.Event
             ))
         except Exception as e_thread:
             logger.error(f"Exception in Upstox WebSocket thread's event loop: {e_thread}", exc_info=True)
         finally:
             loop.close()
-            logger.info("Upstox WebSocket thread event loop closed.")
+            logger.info("Upstox WebSocket thread event loop and asyncio loop closed.")
 
     upstox_ws_thread = threading.Thread(target=run_websocket_loop_in_thread, daemon=True)
     upstox_ws_thread.start()
@@ -306,30 +315,35 @@ def handle_subscribe_upstox_market_data(data):
 @socketio.on('unsubscribe_upstox_market_data')
 @require_login
 def handle_unsubscribe_upstox_market_data(data):
-    global upstox_ws_thread, upstox_subscribed_instrument_keys
+    global upstox_subscribed_instrument_keys # Other globals managed by handle_subscribe_upstox_market_data
 
     instrument_keys_to_unsubscribe = data.get('instrument_keys', [])
     if not isinstance(instrument_keys_to_unsubscribe, list):
         logger.warning("Invalid instrument_keys for Upstox unsubscription.")
+        emit('upstox_market_data_error', {'error': 'Invalid instrument keys for unsubscription.'})
         return
 
     logger.info(f"Request to unsubscribe from Upstox market data for: {instrument_keys_to_unsubscribe}")
 
     made_change = False
+    # Operate on a copy of the current subscriptions
+    current_subscriptions_set = set(list(upstox_subscribed_instrument_keys))
     for key in instrument_keys_to_unsubscribe:
-        if key in upstox_subscribed_instrument_keys:
-            upstox_subscribed_instrument_keys.remove(key)
+        if key in current_subscriptions_set:
+            current_subscriptions_set.remove(key)
             made_change = True
 
     if made_change:
-        logger.info(f"Current Upstox subscriptions after unsubscribe: {list(upstox_subscribed_instrument_keys)}")
-        handle_subscribe_upstox_market_data({'instrument_keys': list(upstox_subscribed_instrument_keys)})
+        logger.info(f"New Upstox subscription set after unsubscribe: {list(current_subscriptions_set)}")
+        # Call the main subscription handler to reconnect with the new set (or close if empty)
+        # This will handle stopping the old thread and starting a new one if needed.
+        handle_subscribe_upstox_market_data({'instrument_keys': list(current_subscriptions_set)})
     else:
-        logger.info("No changes to Upstox subscriptions.")
-
-    emit('upstox_market_data_status', {
-        'status': f'Current Upstox subscriptions: {list(upstox_subscribed_instrument_keys)}'
-    })
+        logger.info("No changes to Upstox subscriptions from unsubscribe request.")
+        # Emit current status even if no change, for client feedback
+        emit('upstox_market_data_status', {
+            'status': f'Current Upstox subscriptions (no change): {list(upstox_subscribed_instrument_keys)}'
+        })
 
 @app.route('/')
 def index():
@@ -554,10 +568,12 @@ def load_watchlist():
                                 instrument_key = instrument.get('instrument_key')
                                 break
 
-                    # Only fall back to concatenation if lookup failed
+                    # Only fall back to concatenation if lookup failed - we need some key for tracking
                     if not instrument_key:
-                        instrument_key = f"NSE_EQ|{tradingsymbol}"  # Fallback format if not found in cache
-                        logger.warning(f"Could not find instrument_key for {tradingsymbol}, using fallback format")
+                        # In a real-world scenario, we should use the proper key format from the API
+                        # This is just a fallback for UI display purposes
+                        logger.warning(f"Could not find instrument_key for {tradingsymbol} in instrument cache")
+                        instrument_key = tradingsymbol  # Use tradingsymbol as a fallback key
 
                     enhanced_item = {"tradingsymbol": tradingsymbol, "instrument_key": instrument_key}
                 else:
@@ -576,11 +592,11 @@ def load_watchlist():
                                     enhanced_item['instrument_key'] = instrument_key
                                     break
 
-                        # If still not found, use fallback format
+                        # If still not found, use tradingsymbol as fallback key
                         if not instrument_key:
-                            instrument_key = f"NSE_EQ|{tradingsymbol}"
+                            logger.warning(f"Could not find instrument_key for {tradingsymbol} in instrument cache")
+                            instrument_key = tradingsymbol  # Use tradingsymbol as fallback key
                             enhanced_item['instrument_key'] = instrument_key
-                            logger.warning(f"Could not find instrument_key for {tradingsymbol}, using fallback format")
 
                 # Add to watchlist items and collect instrument_key for bulk fetching
                 watchlist_items.append(enhanced_item)
@@ -666,14 +682,128 @@ def save_watchlist():
 
         # Use user_id from session or a default if not available
         user_id = session.get('user_profile', {}).get('user_id', 'default_user')
-
         watchlist_path = get_watchlist_filepath(user_id)
 
-        with open(watchlist_path, 'w') as f:
-            json.dump(watchlist_data, f)
+        # Get the instrument cache only once for efficiency
+        instruments_cache = upstox_service.get_instruments_cache("NSE_EQ")
 
-        logger.info(f"Saved watchlist for user {user_id}")
-        return jsonify({"success": True})
+        # Create a lookup dictionary for faster access to instruments by tradingsymbol
+        symbol_to_instrument = {}
+        if instruments_cache:
+            for instrument in instruments_cache:
+                tradingsymbol = instrument.get('tradingsymbol')
+                if tradingsymbol:
+                    symbol_to_instrument[tradingsymbol] = instrument
+            logger.debug(f"Created symbol lookup from {len(symbol_to_instrument)} instruments")
+
+        # Helper function to get instrument key from tradingsymbol
+        def get_instrument_key(tradingsymbol):
+            instrument = symbol_to_instrument.get(tradingsymbol)
+            if instrument and 'instrument_key' in instrument:
+                return instrument['instrument_key']
+            logger.warning(f"Could not find instrument_key for {tradingsymbol} in instrument cache")
+            return f"NSE_EQ|{tradingsymbol}"  # Fallback format
+
+        # Helper function to process a watchlist item into standardized format
+        def process_item(item):
+            if isinstance(item, str):
+                # Simple string format - convert to dictionary with tradingsymbol
+                tradingsymbol = item
+                instrument = symbol_to_instrument.get(tradingsymbol)
+
+                processed_item = {"tradingsymbol": tradingsymbol}
+                if instrument:
+                    processed_item['name'] = instrument.get('name')
+                    processed_item['instrument_key'] = instrument.get('instrument_key')
+
+                return processed_item
+
+            elif isinstance(item, dict):
+                # Dictionary format - ensure it has name and instrument_key if possible
+                processed_item = item.copy()  # Make a copy to avoid modifying the original
+                tradingsymbol = item.get('tradingsymbol')
+
+                if tradingsymbol and 'instrument_key' not in processed_item:
+                    instrument = symbol_to_instrument.get(tradingsymbol)
+                    if instrument:
+                        if 'name' not in processed_item:
+                            processed_item['name'] = instrument.get('name')
+                        processed_item['instrument_key'] = instrument.get('instrument_key')
+
+
+                # Remove any symbol/description fields to ensure we only use tradingsymbol/name
+                processed_item.pop('symbol', None)
+                processed_item.pop('description', None)
+
+                return processed_item
+
+            # If we get here, it's an unsupported format
+            logger.warning(f"Skipping watchlist item with unexpected format: {item}")
+            return None
+
+        # Get the previous watchlist to detect new items
+        previous_watchlist = []
+        previous_instrument_keys = set()
+        if os.path.exists(watchlist_path):
+            try:
+                with open(watchlist_path, 'r') as f:
+                    previous_watchlist = json.load(f)
+
+                # Extract instrument keys from previous watchlist
+                for item in previous_watchlist:
+                    if isinstance(item, str):
+                        previous_instrument_keys.add(get_instrument_key(item))
+                    elif isinstance(item, dict):
+                        if 'instrument_key' in item:
+                            previous_instrument_keys.add(item['instrument_key'])
+                        elif 'tradingsymbol' in item:
+                            previous_instrument_keys.add(get_instrument_key(item['tradingsymbol']))
+            except Exception as e:
+                logger.warning(f"Could not read previous watchlist: {e}")
+
+        # Process watchlist data before saving
+        processed_watchlist = []
+        new_instrument_keys = []
+
+        for item in watchlist_data:
+            processed_item = process_item(item)
+            if processed_item:
+                processed_watchlist.append(processed_item)
+                if 'instrument_key' in processed_item:
+                    new_instrument_keys.append(processed_item['instrument_key'])
+
+        # Save the processed watchlist
+        with open(watchlist_path, 'w') as f:
+            json.dump(processed_watchlist, f)
+
+        logger.info(f"Processed and saved watchlist with {len(processed_watchlist)} items for user {user_id}")
+
+        # Find items that weren't in the previous watchlist
+        new_added_items = [key for key in new_instrument_keys if key and key not in previous_instrument_keys]
+
+        # If there are new items and the user is authenticated with Upstox,
+        # fetch initial quote data and subscribe to market data feed
+        if new_added_items and session.get('upstox_authenticated', False):
+            try:
+                # 1. Fetch initial quote data for the new items
+                initial_data = upstox_service.get_full_market_quote_v2(instrument_keys=new_added_items)
+                if initial_data:
+                    logger.info(f"Fetched initial market data for {len(initial_data)} newly added watchlist items")
+
+                # 2. Update the subscription for market data feed to include the new items
+                global upstox_subscribed_instrument_keys
+                updated_instruments = set(upstox_subscribed_instrument_keys).union(new_added_items)
+                if updated_instruments != upstox_subscribed_instrument_keys:
+                    logger.info(f"Updating market data subscription to include new watchlist items")
+                    handle_subscribe_upstox_market_data({'instrument_keys': list(updated_instruments)})
+            except Exception as e:
+                logger.error(f"Error initializing market data for new watchlist items: {e}", exc_info=True)
+                # Don't fail if we can't fetch initial market data, the watchlist is still saved
+
+        return jsonify({
+            "success": True,
+            "watchlist": processed_watchlist
+        })
 
     except Exception as e:
         logger.error(f"Error saving watchlist: {str(e)}")
@@ -886,14 +1016,21 @@ def fetch_historical_data():
 def fetch_merged_chart_data():
     """API endpoint to fetch and merge historical and intraday data for a complete chart view"""
     try:
-        symbol = request.args.get('symbol')
+        tradingsymbol = request.args.get('tradingsymbol')
         exchange = request.args.get('exchange', 'NSE_EQ')
         interval = request.args.get('interval', '1day')
         from_date = request.args.get('from_date')
         to_date = request.args.get('to_date')
 
-        if not symbol:
-            return jsonify({"success": False, "error": "Symbol is required"}), 400
+        if not tradingsymbol:
+            return jsonify({"success": False, "error": "tradingsymbol is required"}), 400
+
+        # Get instrument_key from cache based on tradingsymbol
+        instrument_key = upstox_service.get_instrument_key_from_cache(tradingsymbol)
+
+        if not instrument_key:
+            logger.error(f"Could not find instrument_key for tradingsymbol: {tradingsymbol}")
+            return jsonify({"success": False, "error": f"Could not find instrument details for {tradingsymbol}"}), 404
 
         # Get Upstox client
         upstox_api_client = upstox_service.get_configuration_api_client()
@@ -912,12 +1049,12 @@ def fetch_merged_chart_data():
         historical_data = None
         intraday_data = None
 
-        logger.info(f"Fetching data for {symbol} with interval {interval}")
+        logger.info(f"Fetching data for {tradingsymbol} (instrument_key: {instrument_key}) with interval {interval}")
 
         # Step 1: Get historical data using the requested interval
         if fetch_historical:
             historical_data = upstox_service.get_historical_data(
-                symbol=symbol,
+                instrument_key=instrument_key,
                 interval=interval,
                 from_date=from_date,
                 to_date=to_date,
@@ -927,12 +1064,12 @@ def fetch_merged_chart_data():
             if historical_data:
                 logger.info(f"Retrieved {len(historical_data)} historical candles with interval {interval}")
             else:
-                logger.warning(f"No historical data available for {symbol} with interval {interval}")
+                logger.warning(f"No historical data available for {instrument_key} with interval {interval}")
 
         # Step 2: Get intraday data for recent updates (only for supported intervals)
         if fetch_intraday:
             intraday_data = upstox_service.get_intra_day_candle_data(
-                symbol=symbol,
+                instrument_key=instrument_key,
                 interval=interval,
                 exchange=exchange
             )
@@ -940,14 +1077,14 @@ def fetch_merged_chart_data():
             if intraday_data:
                 logger.info(f"Retrieved {len(intraday_data)} intraday candles with interval {interval}")
             else:
-                logger.info(f"No intraday data available for {symbol} with interval {interval}")
+                logger.info(f"No intraday data available for {instrument_key} with interval {interval}")
         else:
             # For intervals like "1day", "1week", "1month", intraday data isn't available
             logger.info(f"Intraday data not supported for interval {interval}, using historical data only")
 
         # Step 3: Handle case where we only have one data source
         if not historical_data and not intraday_data:
-            return jsonify({"success": False, "error": f"No data available for {symbol} with interval {interval}"}), 404
+            return jsonify({"success": False, "error": f"No data available for {instrument_key} with interval {interval}"}), 404
 
         if not historical_data and intraday_data:
             logger.info(f"Only intraday data available for {interval}")
