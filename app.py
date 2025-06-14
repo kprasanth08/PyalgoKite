@@ -542,20 +542,51 @@ def load_watchlist():
             for item in watchlist_data:
                 # Handle both string format and object format in watchlist
                 if isinstance(item, str):
-                    symbol = item
-                    instrument_key = f"NSE_EQ|{symbol}"  # Default format if only symbol is saved
-                    enhanced_item = {"symbol": symbol, "instrument_key": instrument_key}
+                    tradingsymbol = item
+                    # Get the proper instrument_key from the instruments cache instead of simple concatenation
+                    instruments_cache = upstox_service.get_instruments_cache("NSE_EQ")
+                    instrument_key = None
+
+                    # Find the proper instrument_key for this symbol
+                    if instruments_cache:
+                        for instrument in instruments_cache:
+                            if instrument.get('tradingsymbol') == tradingsymbol:
+                                instrument_key = instrument.get('instrument_key')
+                                break
+
+                    # Only fall back to concatenation if lookup failed
+                    if not instrument_key:
+                        instrument_key = f"NSE_EQ|{tradingsymbol}"  # Fallback format if not found in cache
+                        logger.warning(f"Could not find instrument_key for {tradingsymbol}, using fallback format")
+
+                    enhanced_item = {"tradingsymbol": tradingsymbol, "instrument_key": instrument_key}
                 else:
                     # Item is already an object
                     enhanced_item = item
-                    symbol = item.get('symbol', item.get('tradingsymbol'))
-                    instrument_key = item.get('instrument_key', f"NSE_EQ|{symbol}")
+                    tradingsymbol = item.get('tradingsymbol')
+                    instrument_key = item.get('instrument_key')
+
+                    # If no instrument_key is saved in the object, look up the correct one
+                    if not instrument_key and tradingsymbol:
+                        instruments_cache = upstox_service.get_instruments_cache("NSE_EQ")
+                        if instruments_cache:
+                            for instrument in instruments_cache:
+                                if instrument.get('tradingsymbol') == tradingsymbol:
+                                    instrument_key = instrument.get('instrument_key')
+                                    enhanced_item['instrument_key'] = instrument_key
+                                    break
+
+                        # If still not found, use fallback format
+                        if not instrument_key:
+                            instrument_key = f"NSE_EQ|{tradingsymbol}"
+                            enhanced_item['instrument_key'] = instrument_key
+                            logger.warning(f"Could not find instrument_key for {tradingsymbol}, using fallback format")
 
                 # Add to watchlist items and collect instrument_key for bulk fetching
                 watchlist_items.append(enhanced_item)
                 if instrument_key:
                     instrument_keys.append(instrument_key)
-
+            print(instrument_keys)
             # Only fetch market data if we have instrument keys and user is authenticated with Upstox
             if instrument_keys and session.get('upstox_authenticated', False):
                 try:
@@ -565,30 +596,51 @@ def load_watchlist():
                         # Second pass: Enhance watchlist items with market data
                         for item in watchlist_items:
                             instrument_key = item.get('instrument_key')
-                            if instrument_key and instrument_key in market_data:
-                                quote = market_data[instrument_key]
+                            if instrument_key:
+                                # Try to find the matching quote data either by direct key or by searching
+                                quote = None
 
-                                # Add market data to each watchlist item
-                                item.update({
-                                    "ltp": quote.get('last_price'),
-                                    "last_price": quote.get('last_price'),
-                                    "open": quote.get('ohlc', {}).get('open'),
-                                    "high": quote.get('ohlc', {}).get('high'),
-                                    "low": quote.get('ohlc', {}).get('low'),
-                                    "close": quote.get('ohlc', {}).get('close'),
-                                    "change": quote.get('change'),
-                                    "percentage_change": quote.get('change_percentage'),
-                                    "volume": quote.get('volume'),
-                                    "last_trade_time": quote.get('last_trade_time'),
-                                    "bid": quote.get('depth', {}).get('buy', [{}])[0].get('price') if quote.get('depth', {}).get('buy') else None,
-                                    "ask": quote.get('depth', {}).get('sell', [{}])[0].get('price') if quote.get('depth', {}).get('sell') else None,
-                                    "total_buy_qty": quote.get('total_buy_qty'),
-                                    "total_sell_qty": quote.get('total_sell_qty')
-                                })
+                                # Direct match
+                                if instrument_key in market_data:
+                                    quote = market_data[instrument_key]
+                                else:
+                                    # The instrument_key might be formatted differently in the response
+                                    # Look for keys that contain the tradingsymbol
+                                    tradingsymbol = item.get('tradingsymbol')
+                                    if tradingsymbol:
+                                        for key, value in market_data.items():
+                                            # Check if the tradingsymbol is part of the key or in the instrument token
+                                            if tradingsymbol in key or (
+                                                    value.get('symbol') and tradingsymbol == value.get('symbol')):
+                                                quote = value
+                                                # Update the instrument_key to match what's in the market data
+                                                item['instrument_key'] = key
+                                                logger.info(f"Found market data for {tradingsymbol} using key {key}")
+                                                break
 
+                                if quote:
+                                    # Add market data to each watchlist item
+                                    item.update({
+                                        "ltp": quote.get('last_price'),
+                                        "last_price": quote.get('last_price'),
+                                        "open": quote.get('ohlc', {}).get('open'),
+                                        "high": quote.get('ohlc', {}).get('high'),
+                                        "low": quote.get('ohlc', {}).get('low'),
+                                        "close": quote.get('ohlc', {}).get('close'),
+                                        "change": quote.get('net_change'),  # Updated from 'change' to 'net_change'
+                                        "percentage_change": quote.get('change_percent', quote.get('net_change_percentage')),
+                                        "volume": quote.get('volume'),
+                                        "last_trade_time": quote.get('last_trade_time'),
+                                        "bid": quote.get('depth', {}).get('buy', [{}])[0].get('price') if quote.get('depth', {}).get('buy') else None,
+                                        "ask": quote.get('depth', {}).get('sell', [{}])[0].get('price') if quote.get('depth', {}).get('sell') else None,
+                                        "total_buy_qty": quote.get('total_buy_quantity', quote.get('total_buy_qty')),
+                                        "total_sell_qty": quote.get('total_sell_quantity', quote.get('total_sell_qty'))
+                                    })
+                                else:
+                                    logger.warning(f"No market data found for {item.get('tradingsymbol')} with key {instrument_key}")
                         logger.info(f"Enhanced watchlist with full market quote data for {len(market_data)} instruments")
                     else:
-                        logger.warning("No market data returned from get_full_market_quote")
+                        logger.warning("No market data returned from get_full_market_quote_v2")
                 except Exception as e:
                     logger.error(f"Error fetching full market quote data: {e}")
                     # Continue with basic watchlist items without market data

@@ -702,7 +702,7 @@ def search_instruments(query, exchange="NSE_EQ"):
     Search for instruments based on a query string using Upstox OHLC V3 API
 
     Args:
-        query (str): Search query string (symbol or name)
+        query (str): Search query string (tradingsymbol or name)
         exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
 
     Returns:
@@ -721,19 +721,20 @@ def search_instruments(query, exchange="NSE_EQ"):
             logger.error(f"No instruments available for exchange {exchange}")
             return []
 
-        # Perform a case-insensitive search on both symbol/tradingsymbol and name
+        # Perform a case-insensitive search on both tradingsymbol and name
         query = query.upper()
         results = []
 
         for inst in instruments:
-            # Check if the query matches the symbol (using either field name) or name
-            symbol = inst.get('tradingsymbol', inst.get('symbol', '')).upper()
+            # Check if the query matches the tradingsymbol or name
+            tradingsymbol = inst.get('tradingsymbol', '').upper()
             name = inst.get('name', '').upper()
 
-            if query in symbol or query in name:
-                # Ensure the instrument has a consistent symbol field regardless of source
-                if 'symbol' not in inst and 'tradingsymbol' in inst:
-                    inst['symbol'] = inst['tradingsymbol']
+            if query in tradingsymbol or query in name:
+                # Ensure the instrument has tradingsymbol field for consistency
+                if 'tradingsymbol' not in inst:
+                    logger.warning(f"Instrument missing tradingsymbol field: {inst}")
+                    continue
 
                 results.append(inst)
 
@@ -761,25 +762,42 @@ def search_symbols(api_client, query, exchange="NSE_EQ"):
         # First try to search using existing instruments cache
         results = search_instruments(query, exchange)
 
+        # Log the raw search results for debugging
+        logger.info(f"Found {len(results)} raw results for query '{query}'")
+        if len(results) > 0:
+            logger.info(f"Sample result fields: {list(results[0].keys())}")
+
         # Format the results for frontend display
         formatted_results = []
 
         for inst in results:
-            symbol = inst.get('symbol', '')
+            # Use tradingsymbol as the primary identifier
+            tradingsymbol = inst.get('tradingsymbol', '')
             name = inst.get('name', '')
-            instrument_key = inst.get('instrument_key', '')
-            isin = inst.get('isin', '')
 
-            # Only include instruments with exchange NSE_EQ
-            if symbol and instrument_key and inst.get('exchange') == 'NSE_EQ':
+            # Get instrument_key or construct it if missing
+            instrument_key = inst.get('instrument_key', '')
+
+            # Check the exchange format - it could be either 'NSE_EQ' or just 'NSE'
+            inst_exchange = inst.get('exchange', '')
+
+            # Include the result if we have a tradingsymbol and either:
+            # 1. The exchange matches exactly, or
+            # 2. The exchange is part of the expected exchange (e.g., 'NSE' is in 'NSE_EQ')
+            if tradingsymbol and (
+                inst_exchange == exchange or
+                exchange.startswith(inst_exchange) or
+                inst_exchange.startswith(exchange.split('_')[0])
+            ):
                 formatted_results.append({
-                    "symbol": symbol,
+                    "symbol": tradingsymbol,  # Using tradingsymbol for the symbol field for consistency with frontend
+                    "tradingsymbol": tradingsymbol,
                     "name": name,
                     "instrument_key": instrument_key,
-                    "isin": isin,
-                    "exchange": "NSE_EQ"
+                    "exchange": exchange  # Use the requested exchange for consistency
                 })
 
+        logger.info(f"Returning {len(formatted_results)} formatted symbols for query '{query}'")
         return formatted_results
     except Exception as e:
         logger.error(f"Error in search_symbols: {str(e)}")
@@ -905,72 +923,7 @@ def merge_historical_and_intraday_data(historical_data, intraday_data, interval)
         merged_data = list(candle_dict.values())
         merged_data.sort(key=lambda x: x[0])
         return merged_data
-def get_intraday_data(symbol, interval="1minute", exchange="NSE_EQ"):
-    """
-    Get intraday OHLC data for a symbol from Upstox using V3 API's get_intra_day_candle_data method
 
-    Args:
-        symbol (str): Symbol/scrip code
-        interval (str): Candle interval (e.g., "1minute", "5minute", "15minute", "30minute", "1hour")
-        exchange (str): Exchange code, default is NSE_EQ (NSE Equity)
-
-    Returns:
-        list: List of candles with OHLC values or None if an error occurs
-    """
-    history_api = get_history_v3_api()
-    if not history_api:
-        logger.error("Failed to create HistoryV3Api instance for intraday data")
-        return None
-
-    # Map interval to the format required by the Upstox API for intraday data
-    interval_mapping = {
-        "1minute": {"unit": "minutes", "interval": 1},
-        "5minute": {"unit": "minutes", "interval": 5},
-        "15minute": {"unit": "minutes", "interval": 15},
-        "30minute": {"unit": "minutes", "interval": 30},
-        "1hour": {"unit": "hours", "interval": 1},
-        "1day": {"unit": "days", "interval": 1}
-    }
-
-    # Get the unit and interval from the mapping
-    mapped_params = interval_mapping.get(interval)
-    if not mapped_params:
-        logger.error(f"Invalid interval format for intraday data: {interval}")
-        return None
-
-    unit = mapped_params["unit"]
-    interval_value = mapped_params["interval"]
-
-    try:
-        # Format instrument key properly for the API
-        instrument_key = f"{exchange}|{symbol}"
-
-        logger.info(f"Fetching intraday data for {instrument_key} with unit={unit}, interval={interval_value}")
-
-        # Call the intraday candle data API method
-        response = history_api.get_intra_day_candle_data(
-            instrument_key=instrument_key,
-            unit=unit,
-            interval=interval_value
-        )
-        print(response)
-
-        # Process the response data
-        if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
-            logger.info(f"Successfully retrieved intraday data for {symbol}, got {len(response.data.candles)} candles")
-            return response.data.candles
-        else:
-            logger.warning(f"No intraday candle data in response for {symbol}")
-            return None
-
-    except ApiException as e:
-        logger.error(f"API Exception when fetching intraday data: {e}")
-        if hasattr(e, 'body') and e.body:
-            logger.error(f"Error body: {e.body}")
-        return None
-    except Exception as e:
-        logger.error(f"Error fetching intraday data for {symbol}: {e}", exc_info=True)
-        return None
 def get_intra_day_candle_data(symbol, interval="5minute", exchange="NSE_EQ"):
     """
     Get intraday candle data for a symbol from Upstox V3 API
@@ -1024,7 +977,6 @@ def get_intra_day_candle_data(symbol, interval="5minute", exchange="NSE_EQ"):
             unit=unit,
             interval=interval_value
         )
-
         # Process the response data
         if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
             candles_data = response.data.candles
@@ -1199,8 +1151,29 @@ def get_full_market_quote_v2(symbols=None, instrument_keys=None, exchange="NSE_E
         # If symbols are provided but not instrument_keys, convert symbols to instrument_keys
         if symbols and not instrument_keys:
             instrument_keys = []
+
+            # Get instruments cache to lookup proper instrument_keys
+            instruments_cache = get_instruments_cache(exchange)
+            if not instruments_cache:
+                logger.error(f"Cannot convert symbols to instrument_keys: No instruments available for {exchange}")
+                return {}
+
             for symbol in symbols:
-                instrument_keys.append(f"{exchange}|{symbol}")
+                # Find the instrument with matching symbol/tradingsymbol
+                instrument_found = False
+                for instrument in instruments_cache:
+                    # Check if this instrument matches our symbol (checking both fields)
+                    if (instrument.get('tradingsymbol') == symbol or instrument.get('symbol') == symbol):
+                        # Use the actual instrument_key from cache
+                        if 'instrument_key' in instrument:
+                            instrument_keys.append(instrument['instrument_key'])
+                            instrument_found = True
+                            break
+
+                # If no matching instrument was found, fall back to simple concatenation
+                if not instrument_found:
+                    logger.warning(f"No instrument key found for symbol {symbol}, using fallback format")
+                    instrument_keys.append(f"{exchange}|{symbol}")
 
         # If no instrument_keys are provided, return empty result
         if not instrument_keys:
@@ -1209,9 +1182,10 @@ def get_full_market_quote_v2(symbols=None, instrument_keys=None, exchange="NSE_E
 
         logger.info(f"Fetching full market quote from V2 API for instrument keys: {instrument_keys}")
 
-        # Build URL with query parameters for instrument_keys
-        url = "https://api.upstox.com/v2/market-quote/quotes"
-        params = {'instrument_keys': ','.join(instrument_keys)}
+        # Build URL directly with instrument_keys, similar to test.py
+        base_url = "https://api.upstox.com/v2/market-quote/quotes"
+        instrument_keys_param = ",".join(instrument_keys)
+        url = f"{base_url}?instrument_key={instrument_keys_param}"
 
         # Set up headers with authentication
         headers = {
@@ -1219,32 +1193,37 @@ def get_full_market_quote_v2(symbols=None, instrument_keys=None, exchange="NSE_E
             'Authorization': f'Bearer {token}'
         }
 
-        # Make the request
-        response = requests.get(url, headers=headers, params=params)
+        # Make the request with direct URL
+        logger.info(f"Making request to URL: {url}")
+        response = requests.get(url, headers=headers)
         response.raise_for_status()  # Raise exception for HTTP errors
 
         # Process response
         json_response = response.json()
+        print(json_response)
         if 'data' in json_response:
             result = json_response['data']
             logger.info(f"Successfully fetched full market quote from V2 API for {len(result)} instruments")
 
             # Process the data to ensure consistent format for frontend use
             processed_data = {}
-            for quote in result:
-                key = quote.get("instrument_key")
-                if not key:
+
+            # The result is a dictionary where keys are instrument_keys (in format "NSE_EQ:SYMBOL")
+            for key, quote in result.items():
+                # Extract instrument token from the quote data
+                instrument_token = quote.get("instrument_token")
+                if not instrument_token:
                     continue
 
                 # Extract relevant data fields from V2 API response
-                processed_data[key] = {
-                    "instrument_key": key,
+                processed_data[instrument_token] = {
+                    "instrument_key": instrument_token,
                     "last_price": quote.get("last_price"),
                     "ohlc": {
-                        "open": quote.get("open_price"),
-                        "high": quote.get("high_price"),
-                        "low": quote.get("low_price"),
-                        "close": quote.get("close_price")
+                        "open": quote.get("ohlc", {}).get("open"),
+                        "high": quote.get("ohlc", {}).get("high"),
+                        "low": quote.get("ohlc", {}).get("low"),
+                        "close": quote.get("ohlc", {}).get("close")
                     },
                     "depth": {
                         "buy": quote.get("depth", {}).get("buy", []),
@@ -1266,11 +1245,13 @@ def get_full_market_quote_v2(symbols=None, instrument_keys=None, exchange="NSE_E
 
             return processed_data
         else:
-            logger.warning("No data in full market quote V2 response")
+            logger.warning(f"No data in full market quote V2 response. Response: {json_response}")
             return {}
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Request Exception when fetching full market quote from V2 API: {e}")
+        if hasattr(e, 'response') and e.response:
+            logger.error(f"Response status: {e.response.status_code}, content: {e.response.text}")
         return {}
     except Exception as e:
         logger.error(f"Error fetching full market quote from V2 API: {e}", exc_info=True)

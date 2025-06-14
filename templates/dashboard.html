@@ -85,8 +85,37 @@ document.addEventListener('DOMContentLoaded', function() {
                         continue;
                     }
                     try {
+                        console.log(`Processing symbol from watchlist: ${symbolToFetch}`); // Debug processing
+
+                        // If we already have market data in the savedItem, use it directly
+                        if (typeof savedItem === 'object' && savedItem.last_price) {
+                            console.log(`Using existing market data for ${symbolToFetch}`);
+                            const instrumentKey = savedItem.instrument_key || `NSE_EQ|${symbolToFetch}`;
+                            watchlist[instrumentKey] = {
+                                symbolData: {
+                                    symbol: symbolToFetch,
+                                    name: savedItem.name || symbolToFetch,
+                                    description: savedItem.name || savedItem.description || symbolToFetch,
+                                    instrument_key: instrumentKey,
+                                    tradingsymbol: symbolToFetch
+                                },
+                                chartSeries: null,
+                                lastTick: {
+                                    last_price: savedItem.last_price || 0,
+                                    change: savedItem.change || 0,
+                                    open: savedItem.open || 0,
+                                    high: savedItem.high || 0,
+                                    low: savedItem.low || 0,
+                                    close: savedItem.close || 0,
+                                    percentage_change: savedItem.percentage_change || 0,
+                                    timestamp: Date.now()
+                                }
+                            };
+                            continue;
+                        }
+
+                        // If we don't have market data, fetch full instrument details
                         console.log(`Fetching details for symbol: ${symbolToFetch}`); // Debug search
-                        // Fetch full instrument details to get the Upstox instrument_key
                         const searchResp = await fetch(`/search-upstox-symbols?query=${encodeURIComponent(symbolToFetch)}`);
                         const searchData = await searchResp.json();
 
@@ -103,10 +132,15 @@ document.addEventListener('DOMContentLoaded', function() {
                             // Use exact match if found, otherwise use first result
                             const fullItem = exactMatch || searchData.symbols[0];
 
-                            if (fullItem && fullItem.instrument_key) {
-                                console.log(`Adding ${symbolToFetch} to watchlist with key: ${fullItem.instrument_key}`);
-                                watchlist[fullItem.instrument_key] = {
-                                    symbolData: { ...fullItem, description: fullItem.name || fullItem.description || fullItem.symbol },
+                            if (fullItem && (fullItem.instrument_key || fullItem.symbol)) {
+                                const instrumentKey = fullItem.instrument_key || `NSE_EQ|${fullItem.symbol}`;
+                                console.log(`Adding ${symbolToFetch} to watchlist with key: ${instrumentKey}`);
+                                watchlist[instrumentKey] = {
+                                    symbolData: {
+                                        ...fullItem,
+                                        description: fullItem.name || fullItem.description || fullItem.symbol,
+                                        tradingsymbol: fullItem.symbol || symbolToFetch
+                                    },
                                     chartSeries: null,
                                     lastTick: { last_price: fullItem.last_price || 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0, timestamp: Date.now() }
                                 };
@@ -114,10 +148,36 @@ document.addEventListener('DOMContentLoaded', function() {
                                 console.warn(`Could not find full details or instrument_key for saved symbol: ${symbolToFetch}`, fullItem);
                             }
                         } else {
-                            console.warn(`No search results found for symbol: ${symbolToFetch}`, searchData);
+                            // If search fails, still add the symbol with minimal data
+                            console.warn(`No search results found for symbol: ${symbolToFetch}. Adding with minimal data.`);
+                            const fallbackInstrumentKey = `NSE_EQ|${symbolToFetch}`;
+                            watchlist[fallbackInstrumentKey] = {
+                                symbolData: {
+                                    symbol: symbolToFetch,
+                                    tradingsymbol: symbolToFetch,
+                                    name: symbolToFetch,
+                                    description: symbolToFetch,
+                                    instrument_key: fallbackInstrumentKey
+                                },
+                                chartSeries: null,
+                                lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0, timestamp: Date.now() }
+                            };
                         }
                     } catch (e) {
                         console.error(`Error processing saved watchlist symbol ${symbolToFetch}:`, e);
+                        // Still add the symbol with minimal data to avoid complete failure
+                        const fallbackInstrumentKey = `NSE_EQ|${symbolToFetch}`;
+                        watchlist[fallbackInstrumentKey] = {
+                            symbolData: {
+                                symbol: symbolToFetch,
+                                tradingsymbol: symbolToFetch,
+                                name: symbolToFetch,
+                                description: symbolToFetch,
+                                instrument_key: fallbackInstrumentKey
+                            },
+                            chartSeries: null,
+                            lastTick: { last_price: 0, change: 0, open:0, high:0, low:0, close:0, percentage_change:0, timestamp: Date.now() }
+                        };
                     }
                 }
 
