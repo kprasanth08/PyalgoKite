@@ -2,6 +2,10 @@
 
 {% block extra_head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+<!-- Include the protobuf.js library for decoding binary messages -->
+<script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.4/dist/protobuf.min.js"></script>
+<!-- Include the Upstox WebSocket client -->
+<script src="{{ url_for('static', filename='js/upstox-websocket.js') }}"></script>
 {% endblock %}
 
 {% block content %}

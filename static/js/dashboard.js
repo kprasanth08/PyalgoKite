@@ -10,7 +10,7 @@ function timeToLocal(originalTime) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    const socket = io({ transports: ['websocket'] }); // Ensure Socket.IO is initialized
+    const socket = io({ transports: ['websocket'] }); // Keep Socket.IO for non-market data communications
 
     const symbolSearchInput = document.getElementById('symbolSearch');
     const searchResultsDiv = document.getElementById('searchResults');
@@ -26,6 +26,49 @@ document.addEventListener('DOMContentLoaded', function() {
     let candleSeries = null;
     let activeInstrumentKey = null;
     let currentLiveCandleData = null; // Added: Stores {time, open, high, low, close} for the forming candle
+
+    // Initialize the direct Upstox WebSocket connection
+    const upstoxWebSocket = window.upstoxWs;
+
+    // Register handlers for the Upstox WebSocket
+    upstoxWebSocket.onStatus(status => {
+        console.log('Upstox WebSocket status:', status);
+        chartStatusSpan.textContent = status;
+        chartStatusSpan.className = status === 'Connected' ? 'text-sm text-green-400' : 'text-sm text-gray-400';
+    });
+
+    upstoxWebSocket.onError(error => {
+        console.error('Upstox WebSocket error:', error);
+        chartStatusSpan.textContent = `Error: ${error}`;
+        chartStatusSpan.className = 'text-sm text-red-400';
+    });
+
+    upstoxWebSocket.onMarketData(feedResponse => {
+        // Process the market data
+        const ltpcData = upstoxWebSocket.extractLtpcFromFeed(feedResponse);
+
+        if (ltpcData) {
+            // Process each instrument's data
+            for (const [instrumentKey, tickData] of Object.entries(ltpcData)) {
+                if (watchlist[instrumentKey]) {
+                    handleUpstoxMarketTick({
+                        instrument_key: instrumentKey,
+                        last_price: tickData.ltp,
+                        change: tickData.change,
+                        percentage_change: tickData.percentage_change,
+                        last_trade_time: tickData.last_trade_time,
+                        timestamp: tickData.last_trade_time ? tickData.last_trade_time * 1000 : Date.now(),
+                        ohlc: {
+                            open: watchlist[instrumentKey].lastTick.open || 0,
+                            high: watchlist[instrumentKey].lastTick.high || 0,
+                            low: watchlist[instrumentKey].lastTick.low || 0,
+                            close: watchlist[instrumentKey].lastTick.close || 0
+                        }
+                    });
+                }
+            }
+        }
+    });
 
     // --- Load watchlist from backend on page load ---
     fetch('/api/watchlist/load')
@@ -209,14 +252,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // --- Socket.IO Event Handlers ---
     socket.on('connect', () => {
-        console.log('Socket.IO connected for Upstox data.');
-        chartStatusSpan.textContent = 'Connected';
-        chartStatusSpan.className = 'text-sm text-green-400';
-        // If there are items in watchlist, re-subscribe (e.g., on reconnect)
-        const keysInWatchlist = Object.keys(watchlist);
-        if (keysInWatchlist.length > 0) {
-            socket.emit('subscribe_upstox_market_data', { instrument_keys: keysInWatchlist });
-        }
+        console.log('Socket.IO connected for backend communication.');
+
+        // Initialize direct WebSocket connection to Upstox
+        initializeUpstoxWebSocket();
 
         // Setup quote refresh interval when socket connects
         setupQuoteRefreshInterval();
@@ -224,12 +263,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     socket.on('disconnect', () => {
         console.log('Socket.IO disconnected.');
-        chartStatusSpan.textContent = 'Disconnected';
-        chartStatusSpan.className = 'text-sm text-red-400';
     });
 
-    socket.on('upstox_market_tick', function(tickData) {
-        // console.log('Received Upstox Tick:', tickData);
+    // Function to handle market data ticks
+    function handleUpstoxMarketTick(tickData) {
         if (tickData && tickData.instrument_key && watchlist[tickData.instrument_key]) {
             const symbolInfo = watchlist[tickData.instrument_key];
             // Update lastTick for watchlist display (ohlc here is from feed, likely daily or as provided)
@@ -292,36 +329,34 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             updateWatchlistItemDisplay(tickData.instrument_key);
         }
-    });
+    }
 
-    socket.on('upstox_market_data_status', function(data) {
-        console.log('Upstox Market Data Status:', data.status);
-        // Only show "Connected" status, hide all subscription-related messages
-        if (data.status && (
-            data.status.includes('Subscribing to') ||
-            data.status.includes('subscription') ||
-            data.status.includes('Already subscribed') ||
-            data.status.includes('WebSocket')
-        )) {
-            // For subscription messages, just show "Connected" if not already shown
-            if (chartStatusSpan.textContent !== 'Connected') {
-                chartStatusSpan.textContent = 'Connected';
-                chartStatusSpan.className = 'text-sm text-green-400';
+    // Initialize direct connection to Upstox WebSocket
+    async function initializeUpstoxWebSocket() {
+        try {
+            // Connect to Upstox WebSocket
+            const connected = await upstoxWebSocket.connect();
+
+            if (connected) {
+                console.log('Successfully connected to Upstox WebSocket');
+
+                // Subscribe to instruments in watchlist
+                const keysInWatchlist = Object.keys(watchlist);
+                if (keysInWatchlist.length > 0) {
+                    upstoxWebSocket.subscribe(keysInWatchlist);
+                    console.log(`Subscribed to ${keysInWatchlist.length} instruments via direct Upstox WebSocket`);
+                }
+            } else {
+                console.error('Failed to connect to Upstox WebSocket');
+                chartStatusSpan.textContent = 'Failed to connect';
+                chartStatusSpan.className = 'text-sm text-red-400';
             }
-            return;
+        } catch (error) {
+            console.error('Error initializing Upstox WebSocket:', error);
+            chartStatusSpan.textContent = 'Connection error';
+            chartStatusSpan.className = 'text-sm text-red-400';
         }
-
-        // Only show non-subscription related status messages
-        chartStatusSpan.textContent = data.status;
-        chartStatusSpan.className = 'text-sm text-green-400';
-    });
-
-    socket.on('upstox_market_data_error', function(data) {
-        console.error('Upstox Market Data Error:', data.error);
-        chartStatusSpan.textContent = `Error: ${data.error}`;
-        chartStatusSpan.className = 'text-sm text-red-400';
-    });
-
+    }
 
     // --- Symbol Search ---
     symbolSearchInput.addEventListener('input', function() {
@@ -395,7 +430,8 @@ document.addEventListener('DOMContentLoaded', function() {
         renderWatchlist();
         saveWatchlistToBackend();
 
-        socket.emit('subscribe_upstox_market_data', { instrument_keys: [item.instrument_key] });
+        // Subscribe to the new symbol via direct Upstox WebSocket
+        upstoxWebSocket.subscribe([item.instrument_key]);
 
         if (!activeInstrumentKey) {
             loadChartForSymbol(item.instrument_key);
@@ -410,7 +446,8 @@ document.addEventListener('DOMContentLoaded', function() {
         renderWatchlist();
         saveWatchlistToBackend();
 
-        socket.emit('unsubscribe_upstox_market_data', { instrument_keys: [instrumentKeyToRemove] });
+        // Unsubscribe from the removed symbol via direct Upstox WebSocket
+        upstoxWebSocket.unsubscribe([instrumentKeyToRemove]);
 
         if (activeInstrumentKey === instrumentKeyToRemove) {
             activeInstrumentKey = null;

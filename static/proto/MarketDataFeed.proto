@@ -1,0 +1,56 @@
+/**
+ * MarketDataFeed.proto for protobuf.js in the browser
+ * This is a simplified version of the protobuf schema for Upstox market data feed
+ */
+syntax = "proto3";
+
+package com.upstox.marketdatafeeder.rpc.proto;
+
+message FeedResponse {
+  map<string, Feed> feeds = 1;
+}
+
+message Feed {
+  uint64 t = 1;
+  int64 seq = 2;
+  string ak = 3;
+  FeedBody ff = 4;
+}
+
+message FeedBody {
+  MarketFF marketFF = 1;
+}
+
+message MarketFF {
+  LtpcData ltpc = 1;
+  OhlcData ohlc = 2;
+  DepthData depth = 3;
+}
+
+message LtpcData {
+  double ltp = 1;
+  double ch = 2;
+  double chp = 3;
+  double cp = 4;
+  int64 ltt = 5;
+  int64 v = 6;
+  double atp = 7;
+}
+
+message OhlcData {
+  double open = 1;
+  double high = 2;
+  double low = 3;
+  double close = 4;
+}
+
+message DepthData {
+  repeated DepthInfo buy = 1;
+  repeated DepthInfo sell = 2;
+}
+
+message DepthInfo {
+  double p = 1;
+  int64 q = 2;
+  int32 o = 3;
+}

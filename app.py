@@ -1183,5 +1183,32 @@ def get_upstox_auth_token():
         logger.error(f"Error providing Upstox auth token: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/upstox/ws-auth-url')
+@require_login
+def get_upstox_ws_auth_url():
+    """API endpoint to get the authorized WebSocket URL for direct frontend connection"""
+    try:
+        # Get the API client with valid authentication
+        api_client = upstox_service.get_configuration_api_client()
+        if not api_client:
+            logger.error("Failed to get Upstox ApiClient for WebSocket auth URL")
+            return jsonify({"success": False, "error": "Upstox authentication failed"}), 401
+
+        # Get the WebSocket authorization URL
+        ws_url = upstox_service.get_market_data_feed_authorize_url(api_client)
+        if not ws_url:
+            logger.error("Failed to get market data feed authorization URL")
+            return jsonify({"success": False, "error": "Failed to get WebSocket authorization URL"}), 500
+
+        logger.info("Successfully retrieved WebSocket authorization URL for frontend")
+        return jsonify({
+            "success": True,
+            "url": ws_url
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting WebSocket authorization URL: {str(e)}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')
