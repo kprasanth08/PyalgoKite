@@ -933,16 +933,10 @@ def upstox_callback():
         session['upstox_token_expiry'] = expiry_time.isoformat()
         session['upstox_authenticated'] = True
 
-        # Also save to file for upstox_service.py to use
-        token_file = os.path.join(os.getcwd(), 'upstox_token.json')
-        with open(token_file, 'w') as f:
-            json.dump({
-                'access_token': access_token,
-                'refresh_token': refresh_token,
-                'expires_at': expiry_time.isoformat()
-            }, f)
-
-        logger.info("Successfully authenticated with Upstox and saved token")
+        # Use the upstox_service function to save token in memory only
+        from upstox_service import save_access_token
+        save_access_token(access_token, expires_in)
+        logger.info("Successfully authenticated with Upstox and saved token to memory")
 
         # Fetch user profile from Upstox if needed
         try:
