@@ -211,6 +211,9 @@ document.addEventListener('DOMContentLoaded', function() {
         if (keysInWatchlist.length > 0) {
             socket.emit('subscribe_upstox_market_data', { instrument_keys: keysInWatchlist });
         }
+
+        // Setup quote refresh interval when socket connects
+        setupQuoteRefreshInterval();
     });
 
     socket.on('disconnect', () => {
@@ -451,9 +454,9 @@ document.addEventListener('DOMContentLoaded', function() {
             if (parseFloat(change) < 0) changeClass = 'text-negative';
 
             const symbolItemDiv = document.createElement('div');
-            // Use instrumentKey for data-token
+            // Use tradingsymbol for id instead of data-token with instrument_key
             symbolItemDiv.className = `watchlist-item p-2 rounded-md cursor-pointer flex flex-col ${currentInstrumentKey === activeInstrumentKey ? 'active-symbol' : 'bg-gray-800'}`;
-            symbolItemDiv.setAttribute('data-token', currentInstrumentKey);
+            symbolItemDiv.id = `watchlist-${itemData.tradingsymbol}`;
             symbolItemDiv.addEventListener('click', () => loadChartForSymbol(currentInstrumentKey));
 
             const topRow = document.createElement('div');
@@ -503,10 +506,14 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function updateWatchlistItemDisplay(instrumentKeyToUpdate) { // Argument is Upstox instrument_key
-        const itemDiv = watchlistDiv.querySelector(`[data-token="${instrumentKeyToUpdate}"]`);
-        if (!itemDiv || !watchlist[instrumentKeyToUpdate] || !watchlist[instrumentKeyToUpdate].lastTick) return;
+        if (!watchlist[instrumentKeyToUpdate] || !watchlist[instrumentKeyToUpdate].lastTick) return;
 
-        const lastTick = watchlist[instrumentKeyToUpdate].lastTick;
+        const item = watchlist[instrumentKeyToUpdate];
+        const tradingsymbol = item.symbolData.tradingsymbol;
+        const itemDiv = document.getElementById(`watchlist-${tradingsymbol}`);
+        if (!itemDiv) return;
+
+        const lastTick = item.lastTick;
         const ltp = lastTick.last_price !== undefined ? Number(lastTick.last_price).toFixed(2) : '-';
         const change = lastTick.change !== undefined ? Number(lastTick.change).toFixed(2) : '0.00';
         const percentageChange = lastTick.percentage_change !== undefined ? Number(lastTick.percentage_change).toFixed(2) : '0.00';
@@ -697,6 +704,151 @@ document.addEventListener('DOMContentLoaded', function() {
             });
     }
 
+    // New function to fetch market quotes directly from Upstox API
+    async function fetchMarketQuotesDirectlyFromUpstox(instrumentKeys) {
+        if (!instrumentKeys || instrumentKeys.length === 0) {
+            return {};
+        }
+
+        try {
+            console.log(`Fetching market quotes directly from Upstox for ${instrumentKeys.length} instruments`);
+
+            // First, get the auth token from our backend
+            const tokenResponse = await fetch('/api/upstox-auth-token');
+
+            if (!tokenResponse.ok) {
+                throw new Error(`HTTP error getting auth token: ${tokenResponse.status}`);
+            }
+
+            const tokenData = await tokenResponse.json();
+
+            if (!tokenData.success || !tokenData.token) {
+                throw new Error(tokenData.error || 'Failed to get Upstox auth token');
+            }
+
+            const authToken = tokenData.token;
+
+            // Build the Upstox API request
+            const instrumentKeysParam = instrumentKeys.join(',');
+            const url = `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodeURIComponent(instrumentKeysParam)}`;
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Authorization': `Bearer ${authToken}`
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`Upstox API error: ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            if (!data.data) {
+                throw new Error('Invalid response format from Upstox API');
+            }
+
+            console.log(`Successfully fetched data directly from Upstox API for ${Object.keys(data.data).length} instruments`);
+            return data.data;
+        } catch (error) {
+            console.error('Error fetching market quotes directly from Upstox:', error);
+            return {};
+        }
+    }
+
+    // Function to update watchlist items with fresh market data
+    async function refreshWatchlistQuotes() {
+        const instrumentKeys = Object.keys(watchlist);
+        if (instrumentKeys.length === 0) {
+            return;
+        }
+
+        // Split instrument keys into batches of 5 to avoid too large requests
+        const batchSize = 5;
+        const batches = [];
+
+        for (let i = 0; i < instrumentKeys.length; i += batchSize) {
+            batches.push(instrumentKeys.slice(i, i + batchSize));
+        }
+
+        console.log(`Refreshing quotes for ${instrumentKeys.length} symbols in ${batches.length} batches`);
+
+        for (const batch of batches) {
+            try {
+                // Fetch directly from Upstox API
+                const quotes = await fetchMarketQuotesDirectlyFromUpstox(batch);
+
+                // Update watchlist with new quote data
+                for (const instrumentKey of batch) {
+                    const quote = quotes[instrumentKey];
+
+                    if (quote && watchlist[instrumentKey]) {
+                        watchlist[instrumentKey].lastTick = {
+                            last_price: quote.last_price || 0,
+                            change: quote.change || quote.net_change || 0,
+                            percentage_change: quote.percentage_change || quote.change_percent || 0,
+                            open: quote.ohlc?.open || 0,
+                            high: quote.ohlc?.high || 0,
+                            low: quote.ohlc?.low || 0,
+                            close: quote.ohlc?.close || 0,
+                            volume: quote.volume || 0,
+                            timestamp: Date.now()
+                        };
+
+                        // Update the UI for this item
+                        updateWatchlistItemDisplay(instrumentKey);
+                    }
+                }
+            } catch (error) {
+                console.error(`Error refreshing quotes for batch:`, error);
+            }
+
+            // Small delay between batches to avoid overwhelming the server
+            if (batches.length > 1) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+    }
+
+    // Set up periodic refresh of market quotes
+    let quoteRefreshInterval;
+
+    function setupQuoteRefreshInterval() {
+        // Clear any existing interval
+        if (quoteRefreshInterval) {
+            clearInterval(quoteRefreshInterval);
+        }
+
+        // During market hours (9:15 AM to 3:30 PM IST on weekdays), refresh every 30 seconds
+        // Otherwise, refresh every 5 minutes
+        const now = new Date();
+        const hour = now.getHours();
+        const minute = now.getMinutes();
+        const day = now.getDay();
+
+        // Check if it's a weekday (1-5) and trading hours (9:15 AM to 3:30 PM)
+        const isMarketHours = day >= 1 && day <= 5 &&
+            ((hour === 9 && minute >= 15) || (hour > 9 && hour < 15) || (hour === 15 && minute <= 30));
+
+        const refreshTime = isMarketHours ? 10000 : 300000; // 10 seconds during market hours, 5 minutes otherwise
+
+        console.log(`Setting up quote refresh interval: ${refreshTime}ms (Market hours: ${isMarketHours})`);
+
+        quoteRefreshInterval = setInterval(() => {
+            if (Object.keys(watchlist).length > 0) {
+                refreshWatchlistQuotes();
+            }
+        }, refreshTime);
+    }
+
+    // Initialize quote refresh when the page loads
+    setupQuoteRefreshInterval();
+
+    // Refresh the interval setup every hour to adjust for market hours changes
+    setInterval(setupQuoteRefreshInterval, 360000); // 1 hour
+
     // --- Timeframe Change Handling ---
     timeframeSelect.addEventListener('change', function() {
         if (activeInstrumentKey) {
@@ -730,9 +882,9 @@ document.addEventListener('DOMContentLoaded', function() {
         item.close_price = data.close_price;
         item.last_trade_time = data.last_trade_time;
 
-        // Find the watchlist item in the DOM
-        const elementId = `watchlist-item-${data.instrument_key.replace(/[|]/g, '-')}`;
-        const element = document.getElementById(elementId);
+        // Find the watchlist item in the DOM using getElementById with tradingsymbol
+        const tradingsymbol = item.symbolData.tradingsymbol;
+        const element = document.getElementById(`watchlist-${tradingsymbol}`);
         if (element) {
             // Update the price display
             const ltpElement = element.querySelector('.symbol-ltp');
@@ -750,7 +902,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 // Update the color
                 const isPositive = data.change > 0;
-                changeElement.className = `symbol-change ${isPositive ? 'text-positive' : 'text-negative'}`;
+                changeElement.className = `symbol-change text-xs ${isPositive ? 'text-positive' : 'text-negative'}`;
             }
 
             // Update percentage change
@@ -762,7 +914,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 // Update the color
                 const isPositive = data.percentage_change > 0;
-                pctChangeElement.className = `symbol-percentage-change ${isPositive ? 'text-positive' : 'text-negative'}`;
+                pctChangeElement.className = `symbol-percentage-change text-xs ${isPositive ? 'text-positive' : 'text-negative'}`;
             }
 
             // Add a subtle flash effect (optional)
@@ -774,7 +926,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // If this is the active symbol, update the chart title as well
         if (data.instrument_key === activeInstrumentKey && chartSymbolHeader) {
-            const symbol = item.symbol || item.tradingsymbol;
+            const symbol = item.symbolData.tradingsymbol;
             const priceText = data.ltp.toFixed(2);
             const changeText = data.change > 0 ? `+${data.change.toFixed(2)}` : data.change.toFixed(2);
             const pctText = data.percentage_change > 0 ? `+${data.percentage_change.toFixed(2)}%` : `${data.percentage_change.toFixed(2)}%`;
@@ -788,3 +940,4 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 });
+

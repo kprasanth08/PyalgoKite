@@ -1157,5 +1157,31 @@ def on_upstox_market_data(feed_response):
     else:
         logger.debug("No LTPC data extracted from market feed")
 
+@app.route('/api/upstox-auth-token')
+@require_login
+def get_upstox_auth_token():
+    """Provide the Upstox authentication token to the frontend for direct API calls"""
+    try:
+        # Get the access token from the current session
+        access_token = session.get('upstox_access_token')
+
+        if not access_token:
+            return jsonify({"success": False, "error": "No Upstox authentication token available"}), 401
+
+        # Check if the token has expired
+        token_expiry = session.get('upstox_token_expiry')
+        if token_expiry and datetime.fromisoformat(token_expiry) <= datetime.now():
+            return jsonify({"success": False, "error": "Upstox token has expired, please re-authenticate"}), 401
+
+        return jsonify({
+            "success": True,
+            "token": access_token,
+            "expires": token_expiry
+        })
+
+    except Exception as e:
+        logger.error(f"Error providing Upstox auth token: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')
