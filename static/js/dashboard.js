@@ -547,7 +547,7 @@ document.addEventListener('DOMContentLoaded', function() {
         currentLiveCandleData = null; // Added: Reset for new chart/symbol/timeframe
 
         const symbolData = watchlist[instrumentKeyToLoad].symbolData;
-        chartSymbolHeader.textContent = `${symbolData.tradingsymbol} (${symbolData.description || 'N/A'})`;
+        chartSymbolHeader.textContent = `${symbolData.tradingsymbol} (${symbolData.name || 'N/A'})`;
 
         const placeholder = document.getElementById('chartPlaceholder');
         if(placeholder) placeholder.classList.add('hidden');
