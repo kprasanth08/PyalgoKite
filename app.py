@@ -65,8 +65,9 @@ upstox_ws_shutdown_event = None # Will be a threading.Event
 # Global variable to store watchlist LTPC updates
 watchlist_ltpc_data = {}
 
-def get_watchlist_filepath(user_id):
-    return os.path.join(WATCHLIST_DIR, f"{user_id}_watchlist.json")
+def get_watchlist_filepath(user_id=None):
+    # Use a shared watchlist file instead of user-specific ones
+    return os.path.join(WATCHLIST_DIR, "shared_watchlist.json")
 
 # Middleware to check if the user is logged in
 def login_required(f):
@@ -542,9 +543,9 @@ def load_watchlist():
     """API endpoint to load a user's watchlist with full market quote data"""
     try:
         # Use user_id from session or a default if not available
-        user_id = session.get('user_profile', {}).get('user_id', 'default_user')
+        #user_id = session.get('user_profile', {}).get('user_id', 'default_user')
 
-        watchlist_path = get_watchlist_filepath(user_id)
+        watchlist_path = get_watchlist_filepath()
         watchlist_items = []
         instrument_keys = []
 
@@ -602,7 +603,6 @@ def load_watchlist():
                 watchlist_items.append(enhanced_item)
                 if instrument_key:
                     instrument_keys.append(instrument_key)
-            print(instrument_keys)
             # Only fetch market data if we have instrument keys and user is authenticated with Upstox
             if instrument_keys and session.get('upstox_authenticated', False):
                 try:
@@ -663,10 +663,10 @@ def load_watchlist():
             else:
                 logger.info(f"Skipping market data fetch: Found {len(instrument_keys)} instruments, Upstox auth: {session.get('upstox_authenticated', False)}")
 
-            logger.info(f"Loaded watchlist for user {user_id}, real-time updates will be provided by market feed")
+            logger.info(f"Loaded watchlist , real-time updates will be provided by market feed")
             return jsonify({"success": True, "watchlist": watchlist_items})
         else:
-            logger.info(f"No existing watchlist found for user {user_id}")
+            logger.info(f"No existing watchlist found for user ")
             return jsonify({"success": True, "watchlist": []})
 
     except Exception as e:
@@ -681,8 +681,8 @@ def save_watchlist():
         watchlist_data = request.json.get('watchlist', [])
 
         # Use user_id from session or a default if not available
-        user_id = session.get('user_profile', {}).get('user_id', 'default_user')
-        watchlist_path = get_watchlist_filepath(user_id)
+        #user_id = session.get('user_profile', {}).get('user_id', 'default_user')
+        watchlist_path = get_watchlist_filepath()
 
         # Get the instrument cache only once for efficiency
         instruments_cache = upstox_service.get_instruments_cache("NSE_EQ")
@@ -776,7 +776,7 @@ def save_watchlist():
         with open(watchlist_path, 'w') as f:
             json.dump(processed_watchlist, f)
 
-        logger.info(f"Processed and saved watchlist with {len(processed_watchlist)} items for user {user_id}")
+        logger.info(f"Processed and saved watchlist with {len(processed_watchlist)} items")
 
         # Find items that weren't in the previous watchlist
         new_added_items = [key for key in new_instrument_keys if key and key not in previous_instrument_keys]
