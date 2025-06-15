@@ -3,6 +3,12 @@
  * Handles watchlist management, chart rendering, and real-time market data updates
  */
 
+// Add timeToLocal function at the top of the file
+function timeToLocal(originalTime) {
+    const d = new Date(originalTime * 1000);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()) / 1000;
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const socket = io({ transports: ['websocket'] }); // Ensure Socket.IO is initialized
 
@@ -648,7 +654,7 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 if (data && data.success && data.data && Array.isArray(data.data)) {
                     const candles = data.data.map(d => ({
-                        time: new Date(d[0]).getTime() / 1000,
+                        time: timeToLocal(new Date(d[0]).getTime() / 1000),
                         open: d[1],
                         high: d[2],
                         low: d[3],
@@ -657,41 +663,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
                     if (candleSeries) {
                         candleSeries.setData(candles);
-
-                        // Add markers based on the tutorial example
-                        if (candles.length > 0) {
-                            const markersData = [];
-                            // Marker for the first candle
-                            markersData.push({
-                                time: candles[0].time,
-                                position: 'aboveBar', // Position above the bar
-                                color: '#f68410',     // Orange color
-                                shape: 'circle',      // Circle shape
-                                text: 'Start'         // Text for the marker
-                            });
-
-                            // Marker for a middle candle (if data exists)
-                            if (candles.length > 2) {
-                                const midIndex = Math.floor(candles.length / 2);
-                                markersData.push({
-                                    time: candles[midIndex].time,
-                                    position: candles[midIndex].close >= candles[midIndex].open ? 'belowBar' : 'aboveBar',
-                                    color: '#2196F3', // Blue color
-                                    shape: 'arrowUp', // Arrow shape
-                                    text: 'Mid'
-                                });
-                            }
-
-                            // Marker for the last candle
-                            markersData.push({
-                                time: candles[candles.length - 1].time,
-                                position: 'belowBar', // Position below the bar
-                                color: '#4caf50',     // Green color
-                                shape: 'square',      // Square shape
-                                text: 'End'
-                            });
-                            candleSeries.setMarkers(markersData);
-                        }
 
                         lightweightChart.timeScale().fitContent();
                     }
