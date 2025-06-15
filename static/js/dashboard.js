@@ -139,6 +139,61 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.warn('Failed to save watchlist:', data);
             } else {
                 console.log('Watchlist saved successfully.');
+
+                // Update the watchlist with the returned data (which includes market data)
+                if (data.watchlist && Array.isArray(data.watchlist)) {
+                    console.log('Received updated watchlist data with market information');
+
+                    // Process each item from the server response
+                    data.watchlist.forEach(serverItem => {
+                        if (serverItem.instrument_key && watchlist[serverItem.instrument_key]) {
+                            // Update existing items with new market data
+                            const localItem = watchlist[serverItem.instrument_key];
+
+                            // Update market data in the lastTick object
+                            if (serverItem.last_price || serverItem.ltp) {
+                                localItem.lastTick = {
+                                    last_price: serverItem.last_price || serverItem.ltp || 0,
+                                    change: serverItem.change || 0,
+                                    percentage_change: serverItem.percentage_change || 0,
+                                    open: serverItem.open || 0,
+                                    high: serverItem.high || 0,
+                                    low: serverItem.low || 0,
+                                    close: serverItem.close || 0,
+                                    timestamp: Date.now()
+                                };
+
+                                // Update the display for this item
+                                updateWatchlistItemDisplay(serverItem.instrument_key);
+                            }
+                        } else if (serverItem.instrument_key && serverItem.tradingsymbol && !watchlist[serverItem.instrument_key]) {
+                            // Handle new items that might be in the server response but not in local watchlist
+                            // This can happen if another client added items
+                            console.log(`Found new item in server response: ${serverItem.tradingsymbol}`);
+                            watchlist[serverItem.instrument_key] = {
+                                symbolData: {
+                                    tradingsymbol: serverItem.tradingsymbol,
+                                    name: serverItem.name || '',
+                                    instrument_key: serverItem.instrument_key
+                                },
+                                chartSeries: null,
+                                lastTick: {
+                                    last_price: serverItem.last_price || serverItem.ltp || 0,
+                                    change: serverItem.change || 0,
+                                    percentage_change: serverItem.percentage_change || 0,
+                                    open: serverItem.open || 0,
+                                    high: serverItem.high || 0,
+                                    low: serverItem.low || 0,
+                                    close: serverItem.close || 0,
+                                    timestamp: Date.now()
+                                }
+                            };
+                        }
+                    });
+
+                    // Render watchlist to show updated data
+                    renderWatchlist();
+                }
             }
         })
         .catch(err => {

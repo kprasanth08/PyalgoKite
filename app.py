@@ -790,6 +790,29 @@ def save_watchlist():
                 if initial_data:
                     logger.info(f"Fetched initial market data for {len(initial_data)} newly added watchlist items")
 
+                    # Update the processed watchlist items with the market data
+                    for item in processed_watchlist:
+                        if 'instrument_key' in item and item['instrument_key'] in initial_data:
+                            quote = initial_data[item['instrument_key']]
+                            # Update the item with market data
+                            item.update({
+                                "ltp": quote.get('last_price'),
+                                "last_price": quote.get('last_price'),
+                                "open": quote.get('ohlc', {}).get('open'),
+                                "high": quote.get('ohlc', {}).get('high'),
+                                "low": quote.get('ohlc', {}).get('low'),
+                                "close": quote.get('ohlc', {}).get('close'),
+                                "change": quote.get('change', quote.get('net_change')),
+                                "percentage_change": quote.get('change_percent', quote.get('net_change_percentage')),
+                                "volume": quote.get('volume'),
+                                "last_trade_time": quote.get('last_trade_time'),
+                                "bid": quote.get('depth', {}).get('buy', [{}])[0].get('price') if quote.get('depth', {}).get('buy') else None,
+                                "ask": quote.get('depth', {}).get('sell', [{}])[0].get('price') if quote.get('depth', {}).get('sell') else None,
+                                "total_buy_qty": quote.get('total_buy_quantity', quote.get('total_buy_qty')),
+                                "total_sell_qty": quote.get('total_sell_quantity', quote.get('total_sell_qty'))
+                            })
+                            logger.info(f"Updated watchlist item {item.get('tradingsymbol')} with market data")
+
                 # 2. Update the subscription for market data feed to include the new items
                 global upstox_subscribed_instrument_keys
                 updated_instruments = set(upstox_subscribed_instrument_keys).union(new_added_items)
