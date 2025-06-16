@@ -1144,7 +1144,6 @@ def get_full_market_quote_v2(symbols=None, instrument_keys=None, exchange="NSE_E
 
         # Process response
         json_response = response.json()
-        print(json_response)
         if 'data' in json_response:
             result = json_response['data']
             logger.info(f"Successfully fetched full market quote from V2 API for {len(result)} instruments")
