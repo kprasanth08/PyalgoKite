@@ -47,22 +47,26 @@ document.addEventListener('DOMContentLoaded', function() {
         // Process the market data
         const ltpcData = upstoxWebSocket.extractLtpcFromFeed(feedResponse);
 
-        if (ltpcData) {
+        if (ltpcData && Object.keys(ltpcData).length > 0) {
+            console.log(`Received market data for ${Object.keys(ltpcData).length} instruments`);
+
             // Process each instrument's data
             for (const [instrumentKey, tickData] of Object.entries(ltpcData)) {
                 if (watchlist[instrumentKey]) {
+                    // Create a proper tick data object with all required fields
                     handleUpstoxMarketTick({
                         instrument_key: instrumentKey,
                         last_price: tickData.ltp,
+                        ltp: tickData.ltp,
                         change: tickData.change,
                         percentage_change: tickData.percentage_change,
                         last_trade_time: tickData.last_trade_time,
                         timestamp: tickData.last_trade_time ? tickData.last_trade_time * 1000 : Date.now(),
-                        ohlc: {
-                            open: watchlist[instrumentKey].lastTick.open || 0,
-                            high: watchlist[instrumentKey].lastTick.high || 0,
-                            low: watchlist[instrumentKey].lastTick.low || 0,
-                            close: watchlist[instrumentKey].lastTick.close || 0
+                        ohlc: tickData.ohlc || {
+                            open: tickData.ltp,
+                            high: tickData.ltp,
+                            low: tickData.ltp,
+                            close: tickData.ltp
                         }
                     });
                 }
@@ -701,7 +705,25 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (candleSeries) {
                         candleSeries.setData(candles);
 
-                        lightweightChart.timeScale().fitContent();
+                        // Check if this is an intraday timeframe (anything with "minute" or "hour")
+                        const isIntraday = selectedTimeframe.includes('minute') || selectedTimeframe.includes('hour');
+
+                        if (isIntraday && candles.length > 0) {
+                            // For intraday timeframes, zoom to the latest day
+                            const now = new Date();
+                            const startOfToday = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+
+                            // Set the visible range to the latest day (or available data if less than a day)
+                            lightweightChart.timeScale().setVisibleRange({
+                                from: startOfToday,
+                                to: startOfToday + 86400 // seconds in a day
+                            });
+
+                            console.log(`Zoomed to latest day for intraday timeframe: ${selectedTimeframe}`);
+                        } else {
+                            // For daily or higher timeframes, fit all content
+                            lightweightChart.timeScale().fitContent();
+                        }
                     }
                 } else {
                     console.warn(`No historical data or invalid format for ${tradingsymbol}:`, data);
@@ -770,7 +792,7 @@ document.addEventListener('DOMContentLoaded', function() {
     async function refreshWatchlistQuotes() {
         const instrumentKeys = Object.keys(watchlist);
         if (instrumentKeys.length === 0) {
-            return;
+            return Promise.resolve();
         }
 
         // Split instrument keys into batches of 5 to avoid too large requests
@@ -818,6 +840,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
         }
+
+        return Promise.resolve();
     }
 
     // Set up periodic refresh of market quotes
@@ -829,33 +853,43 @@ document.addEventListener('DOMContentLoaded', function() {
             clearInterval(quoteRefreshInterval);
         }
 
-        // During market hours (9:15 AM to 3:30 PM IST on weekdays), refresh every 30 seconds
-        // Otherwise, refresh every 5 minutes
-        const now = new Date();
-        const hour = now.getHours();
-        const minute = now.getMinutes();
-        const day = now.getDay();
+        // We're not setting up auto-refresh anymore
+        // Just create a refresh button for manual refreshing
+        console.log('Auto-refresh disabled. Using manual refresh only.');
 
-        // Check if it's a weekday (1-5) and trading hours (9:15 AM to 3:30 PM)
-        const isMarketHours = day >= 1 && day <= 5 &&
-            ((hour === 9 && minute >= 15) || (hour > 9 && hour < 15) || (hour === 15 && minute <= 30));
+        // Check if refresh button already exists
+        if (!document.getElementById('manual-refresh-btn')) {
+            // Create a manual refresh button
+            const refreshBtn = document.createElement('button');
+            refreshBtn.id = 'manual-refresh-btn';
+            refreshBtn.className = 'bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs px-2 py-1 absolute top-2 right-2';
+            refreshBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Refresh';
+            refreshBtn.addEventListener('click', function() {
+                if (Object.keys(watchlist).length > 0) {
+                    // Show loading state
+                    this.disabled = true;
+                    this.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 inline-block animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Loading...';
 
-        const refreshTime = isMarketHours ? 10000 : 300000; // 10 seconds during market hours, 5 minutes otherwise
+                    refreshWatchlistQuotes().then(() => {
+                        // Reset button state after refresh
+                        this.disabled = false;
+                        this.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Refresh';
+                    }).catch(err => {
+                        console.error("Error refreshing quotes:", err);
+                        this.disabled = false;
+                        this.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Refresh';
+                    });
+                }
+            });
 
-        console.log(`Setting up quote refresh interval: ${refreshTime}ms (Market hours: ${isMarketHours})`);
-
-        quoteRefreshInterval = setInterval(() => {
-            if (Object.keys(watchlist).length > 0) {
-                refreshWatchlistQuotes();
+            // Add to watchlist container
+            const watchlistContainer = document.querySelector('.watchlist-container');
+            if (watchlistContainer) {
+                watchlistContainer.style.position = 'relative';
+                watchlistContainer.appendChild(refreshBtn);
             }
-        }, refreshTime);
+        }
     }
-
-    // Initialize quote refresh when the page loads
-    setupQuoteRefreshInterval();
-
-    // Refresh the interval setup every hour to adjust for market hours changes
-    setInterval(setupQuoteRefreshInterval, 360000); // 1 hour
 
     // --- Timeframe Change Handling ---
     timeframeSelect.addEventListener('change', function() {
@@ -883,12 +917,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Update the watchlist object with the latest LTPC data
         const item = watchlist[data.instrument_key];
-        item.ltp = data.ltp;
-        item.last_price = data.ltp; // Keep both fields updated for compatibility
-        item.change = data.change;
-        item.percentage_change = data.percentage_change;
-        item.close_price = data.close_price;
-        item.last_trade_time = data.last_trade_time;
+        item.lastTick = {
+            last_price: data.ltp,
+            ltp: data.ltp,  // Keep both fields updated for compatibility
+            change: data.change,
+            percentage_change: data.percentage_change,
+            close_price: data.close_price,
+            last_trade_time: data.last_trade_time || Math.floor(Date.now() / 1000),
+            timestamp: Date.now()
+        };
 
         // Find the watchlist item in the DOM using getElementById with tradingsymbol
         const tradingsymbol = item.symbolData.tradingsymbol;
@@ -925,28 +962,80 @@ document.addEventListener('DOMContentLoaded', function() {
                 pctChangeElement.className = `symbol-percentage-change text-xs ${isPositive ? 'text-positive' : 'text-negative'}`;
             }
 
-            // Add a subtle flash effect (optional)
+            // Add a subtle flash effect to indicate an update
             element.classList.add('bg-gray-700');
             setTimeout(() => {
                 element.classList.remove('bg-gray-700');
             }, 300);
         }
 
-        // If this is the active symbol, update the chart title as well
-        if (data.instrument_key === activeInstrumentKey && chartSymbolHeader) {
-            const symbol = item.symbolData.tradingsymbol;
-            const priceText = data.ltp.toFixed(2);
-            const changeText = data.change > 0 ? `+${data.change.toFixed(2)}` : data.change.toFixed(2);
-            const pctText = data.percentage_change > 0 ? `+${data.percentage_change.toFixed(2)}%` : `${data.percentage_change.toFixed(2)}%`;
-            const colorClass = data.change > 0 ? 'text-positive' : 'text-negative';
+        // If this is the active symbol, update the chart with the new data
+        if (data.instrument_key === activeInstrumentKey) {
+            // Update chart title with current price and change
+            if (chartSymbolHeader) {
+                const symbol = item.symbolData.tradingsymbol;
+                const priceText = data.ltp.toFixed(2);
+                const changeText = data.change > 0 ? `+${data.change.toFixed(2)}` : data.change.toFixed(2);
+                const pctText = data.percentage_change > 0 ? `+${data.percentage_change.toFixed(2)}%` : `${data.percentage_change.toFixed(2)}%`;
+                const colorClass = data.change > 0 ? 'text-positive' : 'text-negative';
 
-            chartSymbolHeader.innerHTML = `
-                ${symbol}
-                <span class="text-lg ml-2">${priceText}</span>
-                <span class="text-sm ml-2 ${colorClass}">${changeText} (${pctText})</span>
-            `;
+                chartSymbolHeader.innerHTML = `
+                    ${symbol}
+                    <span class="text-lg ml-2">${priceText}</span>
+                    <span class="text-sm ml-2 ${colorClass}">${changeText} (${pctText})</span>
+                `;
+            }
+
+            // Update the chart candle
+            if (candleSeries) {
+                const ltp = parseFloat(data.ltp);
+                const lastTradeTimestampSeconds = data.last_trade_time ? parseInt(data.last_trade_time, 10) : Math.floor(Date.now() / 1000);
+                const selectedTimeframe = timeframeSelect.value;
+                const tradeDate = new Date(lastTradeTimestampSeconds * 1000);
+
+                let candleIntervalStartTime = lastTradeTimestampSeconds; // Default fallback
+
+                // Calculate the aligned start time for the current interval
+                if (selectedTimeframe.endsWith('minute')) {
+                    const intervalMinutes = parseInt(selectedTimeframe.replace('minute', ''));
+                    if (intervalMinutes > 0) {
+                        const currentUtcMinutes = tradeDate.getUTCMinutes();
+                        const intervalStartUtcMinute = Math.floor(currentUtcMinutes / intervalMinutes) * intervalMinutes;
+                        tradeDate.setUTCMinutes(intervalStartUtcMinute, 0, 0); // Zero out seconds and ms
+                        candleIntervalStartTime = Math.floor(tradeDate.getTime() / 1000);
+                    }
+                } else if (selectedTimeframe === "1hour") {
+                    tradeDate.setUTCMinutes(0, 0, 0); // Start of the current hour
+                    candleIntervalStartTime = Math.floor(tradeDate.getTime() / 1000);
+                } else if (selectedTimeframe === '1day') {
+                    tradeDate.setUTCHours(0, 0, 0, 0); // Start of the current day
+                    candleIntervalStartTime = Math.floor(tradeDate.getTime() / 1000);
+                } else {
+                    // For weekly/monthly timeframes, just update the watchlist
+                    return;
+                }
+
+                if (!currentLiveCandleData || currentLiveCandleData.time !== candleIntervalStartTime) {
+                    // Start a new candle for this time interval
+                    currentLiveCandleData = {
+                        time: candleIntervalStartTime,
+                        open: ltp,
+                        high: ltp,
+                        low: ltp,
+                        close: ltp
+                    };
+                    console.log(`New live candle started at ${new Date(candleIntervalStartTime * 1000).toISOString()}`);
+                } else {
+                    // Update the existing candle
+                    currentLiveCandleData.high = Math.max(currentLiveCandleData.high, ltp);
+                    currentLiveCandleData.low = Math.min(currentLiveCandleData.low, ltp);
+                    currentLiveCandleData.close = ltp;
+                }
+
+                // Update the chart with the latest candle data
+                candleSeries.update(currentLiveCandleData);
+                console.log(`Updated live candle: O=${currentLiveCandleData.open.toFixed(2)}, H=${currentLiveCandleData.high.toFixed(2)}, L=${currentLiveCandleData.low.toFixed(2)}, C=${currentLiveCandleData.close.toFixed(2)}`);
+            }
         }
     });
 });
-
-

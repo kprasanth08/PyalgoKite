@@ -9,6 +9,7 @@ import time
 from functools import wraps
 import json
 import upstox_service  # Import the new Upstox service
+from token_manager import token_manager  # Import the token_manager singleton
 import asyncio  # For running async websocket code
 import requests
 from datetime import datetime, timedelta
@@ -84,15 +85,12 @@ dashboard_ws_thread = None
 subscribed_tokens = set()
 
 def get_kite_instance():
-    access_token = get_access_token()
+    access_token = session.get('kite_access_token')
     if not access_token:
         return None
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)
     return kite
-
-def get_access_token():
-    return session.get('kite_access_token')
 
 def require_login(f):
     """
@@ -102,7 +100,7 @@ def require_login(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # Check if user is logged in with either Kite or Upstox
-        kite_authenticated = get_access_token() is not None
+        kite_authenticated = session.get('kite_access_token') is not None
         upstox_authenticated = session.get('upstox_authenticated', False)
 
         if not (kite_authenticated or upstox_authenticated):
@@ -349,7 +347,7 @@ def handle_unsubscribe_upstox_market_data(data):
 @app.route('/')
 def index():
     # Check authentication status for both services
-    kite_authenticated = get_access_token() is not None
+    kite_authenticated = session.get('kite_access_token') is not None
     upstox_authenticated = session.get('upstox_authenticated', False)
 
     # Get profile information to display on the homepage
@@ -481,7 +479,7 @@ def dashboard():
         kite = get_kite_instance() # Original logic attempts to get Kite instance
 
         profile = session.get('user_profile')
-        if not profile and get_access_token(): # If Kite authenticated but profile missing in session
+        if not profile and session.get('kite_access_token'): # If Kite authenticated but profile missing in session
             if kite: # Ensure kite object is available
                 try:
                     profile = kite.profile()
@@ -511,7 +509,7 @@ def user_profile():
     upstox_profile_data = session.get('upstox_profile')
 
     # Attempt to fetch Kite profile if Kite authenticated and profile not in session
-    if not kite_profile_data and get_access_token(): # get_access_token() checks for kite_access_token
+    if not kite_profile_data and session.get('kite_access_token'): # Use session.get directly instead of get_access_token()
         kite = get_kite_instance()
         if kite:
             try:
@@ -956,10 +954,10 @@ def upstox_callback():
         session['upstox_token_expiry'] = expiry_time.isoformat()
         session['upstox_authenticated'] = True
 
-        # Use the upstox_service function to save token in memory only
-        from upstox_service import save_access_token
-        save_access_token(access_token, expires_in)
-        logger.info("Successfully authenticated with Upstox and saved token to memory")
+        # Use token_manager directly to save token in memory
+        from token_manager import token_manager
+        token_manager.save_token(access_token, expires_in)
+        logger.info("Successfully authenticated with Upstox and saved token to token_manager")
 
         # Fetch user profile from Upstox if needed
         try:
@@ -1210,5 +1208,78 @@ def get_upstox_ws_auth_url():
         logger.error(f"Error getting WebSocket authorization URL: {str(e)}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+# app.py
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from backtest_service import BacktestService
+from upstox_service import search_symbols
+from token_manager import token_manager
+
+CORS(app)
+
+backtest_service = BacktestService()
+
+
+@app.route('/api/backtest', methods=['POST'])
+def run_backtest():
+    """Run a backtest with specified parameters"""
+    data = request.json
+    instrument_key = data.get('instrument_key')
+    strategy_name = data.get('strategy')
+    params = data.get('params', {})
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+
+    result = backtest_service.run_backtest(
+        instrument_key, strategy_name, params, start_date, end_date
+    )
+
+    return jsonify(result)
+
+
+@app.route('/api/strategies', methods=['GET'])
+def get_strategies():
+    """Get available strategies with default parameters"""
+    strategies = {
+        "moving_average_crossover": {
+            "name": "Moving Average Crossover",
+            "description": "Generates signals when a short-term MA crosses a long-term MA",
+            "parameters": {
+                "short_window": {"type": "integer", "default": 20, "min": 5, "max": 50},
+                "long_window": {"type": "integer", "default": 50, "min": 20, "max": 200}
+            }
+        },
+        "rsi_strategy": {
+            "name": "RSI Strategy",
+            "description": "Generates signals based on RSI oversold/overbought conditions",
+            "parameters": {
+                "rsi_period": {"type": "integer", "default": 14, "min": 7, "max": 30},
+                "oversold": {"type": "integer", "default": 30, "min": 10, "max": 40},
+                "overbought": {"type": "integer", "default": 70, "min": 60, "max": 90}
+            }
+        }
+    }
+
+    return jsonify({"success": True, "strategies": strategies})
+
+
+@app.route('/api/search', methods=['GET'])
+def search():
+    """Search for stocks/instruments"""
+    query = request.args.get('query', '')
+    exchange = request.args.get('exchange', 'NSE_EQ')
+
+    # Need to create an API client instance
+    api_client = upstox_service.get_configuration_api_client()
+    if not api_client:
+        return jsonify({"success": False, "message": "Failed to create API client"})
+
+    results = search_symbols(api_client, query, exchange)
+    return jsonify({"success": True, "results": results})
+
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0')

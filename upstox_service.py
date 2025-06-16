@@ -11,6 +11,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from token_manager import token_manager  # Import the token_manager singleton
 
 # Add CSV handling imports
 import csv
@@ -55,10 +56,6 @@ UPSTOX_REDIRECT_URI = os.getenv('UPSTOX_REDIRECT_URI', 'http://localhost:6010/up
 NSE_CSV_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz"
 NSE_CSV_LOCAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instrument_cache", "nse_instruments.csv")
 NSE_CSV_PROCESSED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instrument_cache", "nse_instruments_processed.json")
-
-# Global token storage
-_access_token = None
-_token_expiry = None
 
 # Global cache for instruments
 _instruments_cache = {
@@ -129,67 +126,6 @@ def refresh_and_filter_nse_instruments():
         logger.error(f"An unexpected error occurred during instrument processing: {e}", exc_info=True)
     return False
 
-def get_access_token():
-    """
-    Get or refresh access token for Upstox API V3
-
-    Note: Upstox requires OAuth authorization flow with user interaction.
-    This function should be used after obtaining an authorization code through the redirect callback.
-    """
-    global _access_token, _token_expiry
-
-    # If token exists and not expired, return it
-    if _access_token and _token_expiry and datetime.now() < _token_expiry:
-        return _access_token
-
-    # Try to read token from a file - which should be populated by the redirect callback
-    token_file = os.path.join(os.getcwd(), 'upstox_token.json')
-
-    if os.path.exists(token_file):
-        try:
-            with open(token_file, 'r') as f:
-                stored_data = json.load(f)
-
-            # Check if token is still valid
-            if stored_data.get('expires_at') and datetime.fromisoformat(stored_data['expires_at']) > datetime.now():
-                _access_token = stored_data['access_token']
-                _token_expiry = datetime.fromisoformat(stored_data['expires_at'])
-                logger.info(f"Loaded valid Upstox access token from file, expires at {_token_expiry}")
-                return _access_token
-            else:
-                logger.warning("Stored Upstox token has expired")
-        except Exception as e:
-            logger.error(f"Error reading Upstox token file: {e}")
-
-    # If we get here, we need a new token, but this requires user interaction
-    logger.error("Upstox authentication requires user interaction. Please use the login flow.")
-    return None
-
-def save_access_token(access_token, expires_in=86400):
-    """
-    Save access token to file for persistence
-
-    Args:
-        access_token (str): The access token to save
-        expires_in (int): Expiry time in seconds from now
-    """
-    global _access_token, _token_expiry
-
-    _access_token = access_token
-    _token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)  # 5 minutes buffer
-
-    token_file = os.path.join(os.getcwd(), 'upstox_token.json')
-
-    try:
-        with open(token_file, 'w') as f:
-            json.dump({
-                'access_token': access_token,
-                'expires_at': _token_expiry.isoformat()
-            }, f)
-        logger.info(f"Saved Upstox access token to file, expires at {_token_expiry}")
-    except Exception as e:
-        logger.error(f"Error saving Upstox token to file: {e}")
-
 def get_auth_token_from_code(auth_code):
     """
     Exchange authorization code for access token
@@ -223,7 +159,7 @@ def get_auth_token_from_code(auth_code):
             token_data = response.json()
             if 'access_token' in token_data:
                 # Save the token for future use
-                save_access_token(token_data['access_token'], int(token_data.get('expires_in', 86400)))
+                token_manager.save_token(token_data['access_token'], int(token_data.get('expires_in', 86400)))
                 logger.info("Upstox API V3: Access token obtained successfully from auth code")
                 return token_data['access_token']
             else:
@@ -240,7 +176,7 @@ def get_configuration():
     """
     Create and return an Upstox API configuration object
     """
-    token = get_access_token()
+    token = token_manager.get_token()
     if not token:
         return None
 
@@ -252,7 +188,7 @@ def get_configuration_api_client():
     """
     Create and return an Upstox API client instance.
     """
-    token = get_access_token()
+    token = token_manager.get_token()
     if not token:
         logger.error("Access token not available for Upstox API configuration.")
         return None
@@ -657,7 +593,7 @@ def search_instruments(query, exchange="NSE_EQ"):
     """
     try:
         # Get the access token for authorization
-        token = get_access_token()
+        token = token_manager.get_token()
         if not token:
             logger.error("Failed to get access token for instrument search")
             return []
@@ -1087,7 +1023,7 @@ def get_full_market_quote_v2(symbols=None, instrument_keys=None, exchange="NSE_E
     """
     try:
         # Get authentication token
-        token = get_access_token()
+        token = token_manager.get_token()
         if not token:
             logger.error("Failed to get access token for full market quote V2")
             return None
@@ -1243,4 +1179,23 @@ def get_instrument_key_from_cache(symbol):
     except Exception as e:
         logger.error(f"Error getting instrument_key from cache for {symbol}: {str(e)}")
         # Return None in case of error
+        return None
+
+def get_access_token():
+    """
+    Get the current access token from the token manager.
+
+    Returns:
+        str: The access token if available, None otherwise
+    """
+    try:
+        token = token_manager.get_token()
+        if token:
+            logger.info("Successfully retrieved access token from token manager")
+            return token
+        else:
+            logger.warning("No access token available in token manager")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting access token: {e}")
         return None

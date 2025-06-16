@@ -349,6 +349,17 @@ class UpstoxWebSocket {
      * @param {Object} feedResponse - The decoded protobuf message
      */
     handleMarketData(feedResponse) {
+        // Log raw feed data for debugging
+        console.log('Received market data feed:', feedResponse);
+
+        // Check if we have any feeds in the response
+        if (feedResponse && feedResponse.feeds) {
+            const instrumentKeys = Object.keys(feedResponse.feeds);
+            console.log(`Feed contains data for ${instrumentKeys.length} instruments:`, instrumentKeys);
+        } else {
+            console.warn('Received empty or invalid feed response');
+        }
+
         // Process the market data and notify subscribers
         this.messageHandlers.forEach(handler => {
             try {
@@ -444,23 +455,46 @@ class UpstoxWebSocket {
         const ltpcData = {};
 
         try {
-            for (const [instrumentKey, feedData] of Object.entries(feedResponse.feeds)) {
-                if (feedData.ff && feedData.ff.marketFF && feedData.ff.marketFF.ltpc) {
-                    const ltpc = feedData.ff.marketFF.ltpc;
-                    ltpcData[instrumentKey] = {
-                        ltp: ltpc.ltp,                     // Last traded price
-                        change: ltpc.ch,                   // Change from previous close
-                        percentage_change: ltpc.chp,       // Change percentage
-                        close_price: ltpc.cp,              // Close price (previous day)
-                        last_trade_time: ltpc.ltt,         // Last trade time (timestamp)
-                        volume: ltpc.v,                    // Volume (if available)
-                        atp: ltpc.atp                      // Average traded price (if available)
-                    };
+            // Loop through each feed in the response
+            Object.entries(feedResponse.feeds).forEach(([instrumentKey, feed]) => {
+                // Access the feedBody and then marketFF
+                if (feed && feed.ff && feed.ff.marketFF) {
+                    const marketFF = feed.ff.marketFF;
+
+                    // Extract LTPC data if available
+                    if (marketFF.ltpc) {
+                        const ltpc = marketFF.ltpc;
+
+                        ltpcData[instrumentKey] = {
+                            ltp: ltpc.ltp || 0,                   // Last traded price
+                            change: ltpc.ch || 0,                 // Change from previous close
+                            percentage_change: ltpc.chp || 0,     // Change percentage
+                            close_price: ltpc.cp || 0,            // Close price (previous day)
+                            last_trade_time: ltpc.ltt || Math.floor(Date.now() / 1000), // Last trade time
+                            volume: ltpc.v || 0,                  // Volume
+                            atp: ltpc.atp || 0                    // Average traded price
+                        };
+
+                        // Console log for debugging (remove in production)
+                        console.debug(`Feed update for ${instrumentKey}: Price=${ltpc.ltp}, Change=${ltpc.ch}%`);
+                    }
+
+                    // If OHLC data is available, merge it into our data object
+                    if (marketFF.ohlc && ltpcData[instrumentKey]) {
+                        const ohlc = marketFF.ohlc;
+                        ltpcData[instrumentKey].ohlc = {
+                            open: ohlc.open || 0,
+                            high: ohlc.high || 0,
+                            low: ohlc.low || 0,
+                            close: ohlc.close || 0
+                        };
+                    }
                 }
-            }
+            });
+
             return ltpcData;
         } catch (e) {
-            console.error('Error extracting LTPC data from market feed:', e);
+            console.error('Error extracting data from market feed:', e);
             return {};
         }
     }
