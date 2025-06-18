@@ -1,470 +1,272 @@
 /**
+ * Convert time to local timezone for consistent display
+ * @param {number} originalTime - The original time in seconds since the Unix epoch
+ * @returns {number} - The converted time in seconds since the Unix epoch, adjusted to local timezone
+ */
+function timeToLocal(originalTime) {
+    const d = new Date(originalTime * 1000);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()) / 1000;
+}
+
+/**
  * Performance Metrics and Chart Visualization
  * Handles chart creation and trade log updates
  */
 
 let chart = null;
+let chartContainer = null;
 
 /**
- * Create price and equity chart
+ * Create price and equity chart using Lightweight Charts
  */
-function createChart(data, metrics, chartContainer, symbolInput, initialCapital) {
-    if (!chartContainer) return;
+function createChart(data, metrics, container, symbolInput, initialCapital) {
+    if (!container) return;
 
-    // Clear any existing chart
-    if (chart) {
-        chart.destroy();
-    }
+    // Clear any existing chart and store reference
+    container.innerHTML = '';
+    chartContainer = container;
 
-    // Add detailed logging for debugging
-    console.log('Creating chart with data:', data);
-    console.log('Portfolio/Equity data:', data.equity);
-    console.log('Initial capital parameter:', initialCapital);
+    console.log('[Backtest Chart] Starting with simplified candle-only chart');
 
-    // Prepare canvas
-    chartContainer.innerHTML = '';
-    const canvas = document.createElement('canvas');
-    canvas.id = 'priceChart';
-    canvas.width = chartContainer.clientWidth;
-    canvas.height = chartContainer.clientHeight;
-    chartContainer.appendChild(canvas);
-
-    // Create datasets
-    const priceData = [];
-    const equityData = [];
-    const buySignals = [];
-    const sellSignals = [];
-    const shortMaData = [];
-    const longMaData = [];
-
-    const labels = data.candles.map(candle => {
-        const date = new Date(candle.timestamp);
-        return date.toLocaleDateString();
-    });
-
-    // Price data
-    data.candles.forEach(candle => {
-        priceData.push(candle.close);
-    });
-
-    // Generate portfolio values from candle data if position information is available
-    // Handle the case when initialCapital is undefined
-    let initialCapValue = 100000; // Default value
-    if (initialCapital && typeof initialCapital.value !== 'undefined') {
-        initialCapValue = parseFloat(initialCapital.value) || 100000;
-    } else if (initialCapital && typeof initialCapital === 'number') {
-        initialCapValue = initialCapital;
-    } else if (metrics && metrics.initial_capital) {
-        initialCapValue = metrics.initial_capital;
-    }
-
-    let portfolioValue = initialCapValue;
-    let shares = 0;
-    let inPosition = false;
-
-    // First look for equity data in the response
-    if (data.equity) {
-        console.log('Processing equity data from response');
-        if (Array.isArray(data.equity)) {
-            if (data.equity.length > 0) {
-                if (typeof data.equity[0] === 'object' && data.equity[0].portfolio_value !== undefined) {
-                    data.equity.forEach(point => {
-                        equityData.push(point.portfolio_value);
-                    });
-                } else if (typeof data.equity[0] === 'object' && data.equity[0].value !== undefined) {
-                    data.equity.forEach(point => {
-                        equityData.push(point.value);
-                    });
-                } else if (typeof data.equity[0] === 'number') {
-                    equityData = [...data.equity];
-                }
-            }
-        } else if (typeof data.equity === 'object') {
-            if (data.equity.values && Array.isArray(data.equity.values)) {
-                equityData = [...data.equity.values];
-            } else if (data.equity.portfolio && Array.isArray(data.equity.portfolio)) {
-                equityData = [...data.equity.portfolio];
-            }
-        }
-    }
-
-    // If no equity data found, calculate it from position data in candles
-    if (equityData.length === 0) {
-        console.log('No equity data found, generating from position/signal data');
-
-        // First pass to detect buy/sell signals from position changes
-        const buyDates = [];
-        const sellDates = [];
-
-        for (let i = 1; i < data.candles.length; i++) {
-            const prevCandle = data.candles[i-1];
-            const currCandle = data.candles[i];
-
-            // Check for position changes (0 to 1 = buy, 1 to 0 = sell)
-            if (currCandle.position === 1 && (prevCandle.position === 0 || prevCandle.position === null)) {
-                buyDates.push({
-                    timestamp: currCandle.timestamp,
-                    price: currCandle.close
-                });
-
-                // Add to buySignals for chart
-                buySignals.push({
-                    x: i,
-                    y: currCandle.close,
-                    r: 5
-                });
-            }
-            else if (currCandle.position === 0 && prevCandle.position === 1) {
-                sellDates.push({
-                    timestamp: currCandle.timestamp,
-                    price: currCandle.close
-                });
-
-                // Add to sellSignals for chart
-                sellSignals.push({
-                    x: i,
-                    y: currCandle.close,
-                    r: 5
-                });
-            }
-        }
-
-        console.log('Detected buy signals:', buyDates);
-        console.log('Detected sell signals:', sellDates);
-
-        // Now calculate portfolio equity curve
-        let currentShares = 0;
-        let cashBalance = initialCapValue;
-        equityData = [];
-
-        data.candles.forEach((candle, index) => {
-            // Check if this is a buy date
-            const buyMatch = buyDates.find(signal => signal.timestamp === candle.timestamp);
-            if (buyMatch) {
-                // Invest 95% of available cash in shares
-                const investAmount = cashBalance * 0.95;
-                currentShares = investAmount / candle.close;
-                cashBalance -= investAmount;
-                console.log(`Buy at ${candle.close}: ${currentShares} shares, remaining cash: ${cashBalance}`);
-            }
-
-            // Check if this is a sell date
-            const sellMatch = sellDates.find(signal => signal.timestamp === candle.timestamp);
-            if (sellMatch) {
-                // Sell all shares
-                cashBalance += currentShares * candle.close;
-                currentShares = 0;
-                console.log(`Sell at ${candle.close}: new cash balance: ${cashBalance}`);
-            }
-
-            // Calculate current portfolio value
-            const portfolioValue = cashBalance + (currentShares * candle.close);
-            equityData.push(portfolioValue);
-        });
-    }
-
-    // If still empty, create a synthetic curve based on total return
-    if (equityData.length === 0 && metrics && metrics.total_return !== undefined) {
-        console.log('Creating synthetic equity curve from total return');
-        const finalValue = initialCapValue * (1 + metrics.total_return);
-
-        // Create a simple linear growth from initial to final value
-        const dataPoints = data.candles.length;
-        for (let i = 0; i < dataPoints; i++) {
-            const progress = i / (dataPoints - 1);
-            equityData.push(initialCapValue + progress * (finalValue - initialCapValue));
-        }
-    }
-
-    console.log('Final equity data:', equityData);
-
-    // If no signals detected yet, try to get them from the API data
-    if (buySignals.length === 0 && sellSignals.length === 0) {
-        if (data.signals) {
-            console.log('Processing signals from API data', data.signals);
-
-            // Process buy signals
-            if (data.signals.buy && Array.isArray(data.signals.buy)) {
-                data.signals.buy.forEach(signal => {
-                    const index = labels.findIndex(date => {
-                        const signalDate = new Date(signal.timestamp);
-                        return date === signalDate.toLocaleDateString();
-                    });
-
-                    if (index !== -1) {
-                        buySignals.push({
-                            x: index,
-                            y: priceData[index],
-                            r: 5
-                        });
-                    }
-                });
-            }
-
-            // Process sell signals
-            if (data.signals.sell && Array.isArray(data.signals.sell)) {
-                data.signals.sell.forEach(signal => {
-                    const index = labels.findIndex(date => {
-                        const signalDate = new Date(signal.timestamp);
-                        return date === signalDate.toLocaleDateString();
-                    });
-
-                    if (index !== -1) {
-                        sellSignals.push({
-                            x: index,
-                            y: priceData[index],
-                            r: 5
-                        });
-                    }
-                });
-            }
-        }
-    }
-
-    // Create trades array for trade log if necessary
-    if (!metrics.trades || metrics.trades.length === 0) {
-        const trades = [];
-        // Pair up buy and sell signals to create trades
-        const buyDates = [];
-        const sellDates = [];
-
-        // Extract buy and sell dates from signals
-        data.candles.forEach((candle, index) => {
-            const buySignal = buySignals.find(s => s.x === index);
-            const sellSignal = sellSignals.find(s => s.x === index);
-
-            if (buySignal) {
-                buyDates.push({
-                    timestamp: candle.timestamp,
-                    price: candle.close
-                });
-            }
-
-            if (sellSignal) {
-                sellDates.push({
-                    timestamp: candle.timestamp,
-                    price: candle.close
-                });
-            }
-        });
-
-        for (let i = 0; i < Math.min(buyDates.length, sellDates.length); i++) {
-            const buyDate = buyDates[i];
-            const sellDate = sellDates[i];
-
-            if (buyDate && sellDate) {
-                const profitPct = ((sellDate.price / buyDate.price) - 1) * 100;
-
-                trades.push({
-                    entry_date: buyDate.timestamp,
-                    exit_date: sellDate.timestamp,
-                    entry_price: buyDate.price,
-                    exit_price: sellDate.price,
-                    profit_pct: profitPct
-                });
-            }
-        }
-
-        if (trades.length > 0) {
-            console.log('Generated trades from signals:', trades);
-            if (!metrics.trades) metrics.trades = trades;
-        }
-    }
-
-    // MA data if available
-    if (data.indicators) {
-        if (data.indicators.short_ma) {
-            data.indicators.short_ma.forEach(point => {
-                shortMaData.push(point.value);
-            });
-        }
-
-        if (data.indicators.long_ma) {
-            data.indicators.long_ma.forEach(point => {
-                longMaData.push(point.value);
-            });
-        }
-    }
-
-    // Create datasets array
-    const datasets = [
-        {
-            label: (symbolInput && symbolInput.value ? symbolInput.value : 'Price') + ' Price',
-            data: priceData,
-            borderColor: '#60a5fa',
-            backgroundColor: 'rgba(96, 165, 250, 0.1)',
-            borderWidth: 2,
-            fill: false,
-            tension: 0.1,
-            yAxisID: 'y'
-        },
-        {
-            label: 'Portfolio Value',
-            data: equityData,
-            borderColor: '#10b981',
-            borderWidth: 2,
-            fill: false,
-            tension: 0.1,
-            yAxisID: 'y1'
-        }
-    ];
-
-    // Add indicator datasets if available
-    if (shortMaData.length > 0) {
-        datasets.push({
-            label: 'Short MA',
-            data: shortMaData,
-            borderColor: '#f59e0b',
-            borderWidth: 2,
-            fill: false,
-            tension: 0.1,
-            yAxisID: 'y',
-            pointRadius: 0
-        });
-    }
-
-    if (longMaData.length > 0) {
-        datasets.push({
-            label: 'Long MA',
-            data: longMaData,
-            borderColor: '#ef4444',
-            borderWidth: 2,
-            fill: false,
-            tension: 0.1,
-            yAxisID: 'y',
-            pointRadius: 0
-        });
-    }
-
-    // Add buy/sell signals
-    if (buySignals.length > 0) {
-        datasets.push({
-            label: 'Buy Signals',
-            data: buySignals,
-            backgroundColor: 'rgba(16, 185, 129, 0.8)',
-            borderColor: 'rgba(16, 185, 129, 1)',
-            borderWidth: 1,
-            pointStyle: 'triangle',
-            pointRadius: 8,
-            pointRotation: 0,
-            type: 'bubble',
-            yAxisID: 'y'
-        });
-    }
-
-    if (sellSignals.length > 0) {
-        datasets.push({
-            label: 'Sell Signals',
-            data: sellSignals,
-            backgroundColor: 'rgba(239, 68, 68, 0.8)',
-            borderColor: 'rgba(239, 68, 68, 1)',
-            borderWidth: 1,
-            pointStyle: 'triangle',
-            pointRadius: 8,
-            pointRotation: 180,
-            type: 'bubble',
-            yAxisID: 'y'
-        });
-    }
-
-    // Create the chart
-    chart = new Chart(canvas, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: datasets
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            aspectRatio: 2,  // Control aspect ratio
-            interaction: {
-                mode: 'index',
-                intersect: false,
+    try {
+        // Step 1: Create the chart with dark theme
+        chart = LightweightCharts.createChart(container, {
+            width: container.clientWidth,
+            height: container.clientHeight,
+            layout: {
+                background: { type: 'solid', color: '#1f2937' },
+                textColor: '#d1d5db',
             },
-            scales: {
-                x: {
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: 'rgba(255, 255, 255, 0.7)',
-                        maxRotation: 45,
-                        minRotation: 45
-                    }
-                },
-                y: {
-                    position: 'left',
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: 'rgba(255, 255, 255, 0.7)'
-                    },
-                    title: {
-                        display: true,
-                        text: 'Price',
-                        color: 'rgba(255, 255, 255, 0.7)'
-                    }
-                },
-                y1: {
-                    position: 'right',
-                    grid: {
-                        drawOnChartArea: false
-                    },
-                    ticks: {
-                        color: 'rgba(255, 255, 255, 0.7)'
-                    },
-                    title: {
-                        display: true,
-                        text: 'Portfolio Value',
-                        color: 'rgba(255, 255, 255, 0.7)'
-                    }
-                }
+            grid: {
+                vertLines: { color: '#374151' },
+                horzLines: { color: '#374151' },
             },
-            plugins: {
-                legend: {
-                    position: 'top',
-                    labels: {
-                        color: 'rgba(255, 255, 255, 0.7)'
+        });
+
+        console.log('[Backtest Chart] Chart created');
+
+        // Step 2: Process only candle data with strict validation
+        let ohlcData = [];
+
+        console.log('[Backtest Chart] Candles array length:', data.candles?.length || 0);
+        console.log('[Backtest Chart] First candle sample:', data.candles?.[0]);
+
+        if (Array.isArray(data.candles) && data.candles.length > 0) {
+            // Process candles with more logging
+            data.candles.forEach((candle, index) => {
+                if (!candle || !candle.timestamp) {
+                    if (index < 5) console.log(`[Backtest Chart] Skipping candle at index ${index}, invalid candle or timestamp`);
+                    return;
+                }
+
+                // Log first few candles for debugging
+                if (index < 5) {
+                    console.log(`[Backtest Chart] Processing candle ${index}:`, {
+                        timestamp: candle.timestamp,
+                        open: candle.open,
+                        high: candle.high,
+                        low: candle.low,
+                        close: candle.close
+                    });
+                }
+
+                // Validate OHLC values
+                if (typeof candle.open !== 'number' || typeof candle.high !== 'number' ||
+                    typeof candle.low !== 'number' || typeof candle.close !== 'number') {
+                    if (index < 5) console.log(`[Backtest Chart] Skipping candle at index ${index}, invalid OHLC values`);
+                    return;
+                }
+
+                // Convert timestamp to seconds
+                let time;
+                try {
+                    time = Math.floor(new Date(candle.timestamp).getTime() / 1000);
+                    if (isNaN(time)) {
+                        if (index < 5) console.log(`[Backtest Chart] Skipping candle at index ${index}, invalid timestamp conversion`);
+                        return;
                     }
-                },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false
-                },
-                zoom: {
-                    limits: {
-                        y: {min: 'original', max: 'original', minRange: 1}
-                    },
-                    zoom: {
-                        wheel: {
-                            enabled: true,
-                            speed: 0.1
+                } catch (e) {
+                    if (index < 5) console.log(`[Backtest Chart] Error converting timestamp at index ${index}:`, e);
+                    return;
+                }
+
+                // Add valid candle to data
+                ohlcData.push({
+                    time: time,
+                    open: candle.open,
+                    high: candle.high,
+                    low: candle.low,
+                    close: candle.close
+                });
+            });
+
+            console.log(`[Backtest Chart] Processed ${ohlcData.length} valid candles`);
+
+            // Step 3: Sort data chronologically
+            ohlcData.sort((a, b) => a.time - b.time);
+
+            // Remove duplicate timestamps (keeping only the first occurrence)
+            const uniqueTimes = new Set();
+            ohlcData = ohlcData.filter(candle => {
+                if (uniqueTimes.has(candle.time)) {
+                    return false;
+                }
+                uniqueTimes.add(candle.time);
+                return true;
+            });
+
+            console.log(`[Backtest Chart] After deduplication: ${ohlcData.length} candles`);
+
+            // Step 4: Create candlestick series if we have data
+            if (ohlcData.length > 0) {
+                const candleSeries = chart.addCandlestickSeries({
+                    upColor: '#26a69a',
+                    downColor: '#ef5350',
+                    borderVisible: false,
+                    wickUpColor: '#26a69a',
+                    wickDownColor: '#ef5350'
+                });
+
+                // Set the candlestick data
+                candleSeries.setData(ohlcData);
+                console.log('[Backtest Chart] Set candlestick data');
+
+                // Step 5: Add portfolio equity line if available
+                if (data.equity && data.equity.length > 0) {
+                    console.log('[Backtest Chart] Processing portfolio data:', data.equity.length, 'points');
+                    console.log('[Backtest Chart] First portfolio point sample:', data.equity[0]);
+
+                    // Create a separate scale for the equity line
+                    const equitySeries = chart.addLineSeries({
+                        color: '#4CAF50',
+                        lineWidth: 2,
+                        // Use separate price scale but overlay on the same chart
+                        priceScaleId: 'overlay-scale-right',
+                        // Make the price scale visible on the right side
+                        lastValueVisible: true,
+                        priceLineVisible: true,
+                        // Set up separate formatting
+                        priceFormat: {
+                            type: 'price',
+                            precision: 2,
+                            minMove: 0.01,
                         },
-                        pinch: {
-                            enabled: true
+                        // Add a title to distinguish it in the legend
+                        title: 'Portfolio',
+                        // Overlay on the same chart
+                        overlay: true,
+                        // Additional styling
+                        lineType: 1, // LineType.Simple in v4.2.0
+                        crosshairMarkerVisible: true,
+                        crosshairMarkerRadius: 4,
+                    });
+
+                    // Configure the price axis for the equity series
+                    chart.priceScale('overlay-scale-right').applyOptions({
+                        visible: true,
+                        borderColor: '#4b5563',
+                        borderVisible: true,
+                        scaleMargins: {
+                            top: 0.1,
+                            bottom: 0.2,
                         },
-                        mode: 'xy'
-                    },
-                    pan: {
-                        enabled: true,
-                        mode: 'xy',
-                        threshold: 10
+                        // Use a different text color to differentiate
+                        textColor: '#4CAF50',
+                    });
+
+                    // Process equity data with validation
+                    const equityData = [];
+                    data.equity.forEach((point, index) => {
+                        // Different equity data formats are possible - handle them all
+                        let timestamp, value;
+
+                        if (typeof point === 'object') {
+                            // Format: {timestamp: "...", portfolio_value: 10000}
+                            if (point.timestamp && (point.portfolio_value !== undefined || point.value !== undefined)) {
+                                timestamp = point.timestamp;
+                                value = point.portfolio_value !== undefined ? point.portfolio_value : point.value;
+                            }
+                        } else if (typeof point === 'number') {
+                            // Format: Simple array of values
+                            value = point;
+                            // We need to use candle timestamps in this case
+                            if (data.candles[index]) {
+                                timestamp = data.candles[index].timestamp;
+                            }
+                        }
+
+                        // Validate
+                        if (!timestamp || typeof value !== 'number' || isNaN(value)) {
+                            if (index < 5) console.log(`[Backtest Chart] Skipping portfolio point at index ${index}, invalid data`);
+                            return;
+                        }
+
+                        // Convert timestamp to seconds
+                        try {
+                            const time = Math.floor(new Date(timestamp).getTime() / 1000);
+                            if (!isNaN(time)) {
+                                equityData.push({
+                                    time: time,
+                                    value: value
+                                });
+                            }
+                        } catch (e) {
+                            if (index < 5) console.log(`[Backtest Chart] Error converting equity timestamp at index ${index}:`, e);
+                        }
+                    });
+
+                    console.log(`[Backtest Chart] Processed ${equityData.length} valid equity points`);
+
+                    // Only add the series if we have data
+                    if (equityData.length > 0) {
+                        // Sort by time
+                        equityData.sort((a, b) => a.time - b.time);
+
+                        // Set the equity data
+                        equitySeries.setData(equityData);
+                        console.log('[Backtest Chart] Set portfolio equity data');
                     }
                 }
-            }
-        }
-    });
 
-    // Add reset zoom button
-    const resetButton = document.createElement('button');
-    resetButton.textContent = 'Reset Zoom';
-    resetButton.className = 'mt-2 px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded-md text-sm transition duration-300';
-    resetButton.onclick = function() {
-        chart.resetZoom();
-    };
-    chartContainer.appendChild(resetButton);
+                // Fit content to view
+                chart.timeScale().fitContent();
+                console.log('[Backtest Chart] Fitted timescale to content');
+
+                // Add simple chart legend
+                const legend = document.createElement('div');
+                legend.className = 'chart-legend';
+                legend.innerHTML = `<div style="color: white; text-align: center; margin-top: 10px;">
+                    ${symbolInput?.value || 'Price Chart'} - ${ohlcData.length} candles
+                    ${data.equity ? ' | Portfolio Equity Line' : ''}
+                </div>`;
+                container.appendChild(legend);
+            } else {
+                console.error('[Backtest Chart] No valid candle data after processing');
+                container.innerHTML = '<div style="color: red; text-align: center; margin-top: 20px;">No valid candle data available</div>';
+            }
+        } else {
+            console.error('[Backtest Chart] No candles array in data');
+            container.innerHTML = '<div style="color: red; text-align: center; margin-top: 20px;">No candle data available</div>';
+        }
+
+    } catch (error) {
+        console.error('[Backtest Chart] Error creating chart:', error);
+        container.innerHTML = `<div style="color: red; text-align: center; margin-top: 20px;">
+            Error creating chart: ${error.message}
+        </div>`;
+    }
+}
+
+/**
+ * Handle window resize
+ */
+function handleResize() {
+    if (chart && chartContainer) {
+        chart.applyOptions({
+            width: chartContainer.clientWidth,
+            height: chartContainer.clientHeight - 30 // Account for legend
+        });
+    }
 }
 
 /**

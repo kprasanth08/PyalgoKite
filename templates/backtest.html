@@ -2,11 +2,8 @@
 
 {% block extra_head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
-<!-- Add Chart.js library -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<!-- Add Chart.js Zoom plugin -->
-<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.0"></script>
+<!-- Add Lightweight Charts library with specific version for stability -->
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -43,7 +40,7 @@
 
                 <!-- Symbol Selection -->
                 <div class="space-y-2">
-                    <label for="symbolSelect" class="block text-sm font-medium text-gray-300">Symbol</label>
+                    <label for="symbolInput" class="block text-sm font-medium text-gray-300">Symbol</label>
                     <div class="relative">
                         <input type="text" id="symbolInput" class="w-full p-2 border border-gray-600 bg-gray-700 text-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="Search symbol...">
                         <div id="symbolDropdown" class="absolute z-10 w-full bg-gray-700 border border-gray-600 rounded-md mt-1 hidden max-h-48 overflow-y-auto">
