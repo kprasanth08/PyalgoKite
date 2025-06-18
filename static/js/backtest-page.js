@@ -497,7 +497,8 @@ document.addEventListener('DOMContentLoaded', function() {
             },
             options: {
                 responsive: true,
-                maintainAspectRatio: false,
+                maintainAspectRatio: true,
+                aspectRatio: 2,  // Control aspect ratio
                 interaction: {
                     mode: 'index',
                     intersect: false,
@@ -552,10 +553,41 @@ document.addEventListener('DOMContentLoaded', function() {
                     tooltip: {
                         mode: 'index',
                         intersect: false
+                    },
+                    // Add zoom plugin configuration
+                    zoom: {
+                        limits: {
+                            y: {min: 'original', max: 'original', minRange: 1}  // Add minRange to prevent excessive zooming
+                        },
+                        zoom: {
+                            wheel: {
+                                enabled: true,
+                                speed: 0.1,
+                            },
+                            pinch: {
+                                enabled: true
+                            },
+                            mode: 'xy',
+                        },
+                        pan: {
+                            enabled: true,
+                            mode: 'xy',
+                            // Removed modifierKey to allow direct panning
+                            threshold: 10  // Minimum pan distance in pixels
+                        }
                     }
                 }
             }
         });
+
+        // Add reset zoom button
+        const resetButton = document.createElement('button');
+        resetButton.textContent = 'Reset Zoom';
+        resetButton.className = 'mt-2 px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded-md text-sm transition duration-300';
+        resetButton.onclick = function() {
+            chart.resetZoom();
+        };
+        chartContainer.appendChild(resetButton);
     }
 
     /**

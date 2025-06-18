@@ -4,6 +4,9 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 <!-- Add Chart.js library -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<!-- Add Chart.js Zoom plugin -->
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.0"></script>
 {% endblock %}
 
 {% block content %}
@@ -20,7 +23,7 @@
         </div>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 h-full">
         <!-- Left Panel - Backtest Configuration -->
         <div class="lg:col-span-1 bg-gray-800 rounded-lg p-6 overflow-y-auto">
             <h2 class="text-xl font-semibold mb-6 text-gray-100">Backtest Configuration</h2>
@@ -82,7 +85,7 @@
         </div>
 
         <!-- Right Panel - Results -->
-        <div class="lg:col-span-2 bg-gray-800 rounded-lg p-6 overflow-hidden flex flex-col">
+        <div class="lg:col-span-4 bg-gray-800 rounded-lg p-6 overflow-hidden flex flex-col">
             <!-- Results Header -->
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-xl font-semibold text-gray-100">Backtest Results</h2>
@@ -122,8 +125,8 @@
                 </div>
 
                 <!-- Chart Container -->
-                <div class="flex-1 bg-gray-700 rounded-lg p-4">
-                    <div id="backtestChart" class="w-full h-full min-h-96"></div>
+                <div class="flex-1 bg-gray-700 rounded-lg p-4 overflow-hidden" style="height: 60vh; max-height: 60vh;">
+                    <div id="backtestChart" class="w-full h-full"></div>
                 </div>
 
                 <!-- Trade Log -->
