@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import json
 import traceback # Added for more detailed error logging
+import random # Added for random color generation
 
 
 class BacktestService:
@@ -13,7 +14,8 @@ class BacktestService:
         self.strategies = {
             "moving_average_crossover": self.moving_average_crossover,
             "rsi_strategy": self.rsi_strategy,
-            "bollinger_bands": self.bollinger_bands
+            "bollinger_bands": self.bollinger_bands,
+            "ema_crossover": self.ema_crossover
             # Add more strategies as needed
         }
 
@@ -207,6 +209,45 @@ class BacktestService:
             }
         }
 
+    def ema_crossover(self, df, params):
+        """Exponential Moving Average (EMA) Crossover strategy implementation"""
+        period = params.get("period", 14)
+
+        # Generate a random color for the EMA line
+        random_color = "#{:02x}{:02x}{:02x}".format(
+            *[random.randint(30, 220) for _ in range(3)]
+        )
+
+        # Calculate the EMA using the single period
+        df['ema'] = df['close'].ewm(span=period, adjust=False).mean()
+
+        df['signal'] = 0
+        # Generate signals based on price crossing EMA
+        if len(df) > period:
+            df.loc[df.index[period:], 'signal'] = np.where(
+                df['close'].iloc[period:] > df['ema'].iloc[period:], 1, 0
+            )
+        df['position'] = df['signal'].diff()
+
+        buy_signals = df[df['position'] == 1].index.tolist()
+        sell_signals = df[df['position'] == -1].index.tolist()
+
+        return {
+            "candles": self.replace_nan_with_none(df.reset_index().to_dict('records')),
+            "indicators": {
+                "ema": self.replace_nan_with_none(
+                    [{"timestamp": record["timestamp"], "value": record["ema"], "color": random_color}
+                     for record in df[['ema']].dropna().reset_index().to_dict('records')]
+                )
+            },
+            "signals": {
+                "buy": [{"timestamp": str(timestamp), "price": df.loc[timestamp, 'close']}
+                        for timestamp in buy_signals],
+                "sell": [{"timestamp": str(timestamp), "price": df.loc[timestamp, 'close']}
+                         for timestamp in sell_signals]
+            }
+        }
+
     def calculate_metrics(self, df, result):
         """Calculate backtest performance metrics"""
         try:
@@ -356,4 +397,3 @@ class BacktestService:
             print(f"Error in calculate_metrics: {e}")
             traceback.print_exc()
             return {"error": str(e), "total_trades": 0, "win_rate": 0, "avg_profit": 0, "avg_loss": 0, "max_profit": 0, "max_loss": 0, "net_profit": 0, "trades": []}
-

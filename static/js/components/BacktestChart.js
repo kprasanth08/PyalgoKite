@@ -76,21 +76,58 @@ function BacktestChart({ data, indicators, signals, strategyName, symbolName }) 
             // Skip if values are not valid
             if (!Array.isArray(values) || values.length === 0) return;
 
+            console.log("Indicator data for", name, ":", values[0]);
+
+            // Determine the color to use
+            let indicatorColor = '#FF0000'; // Default  red
+
+            // Check if the indicator data has a color property
+            if (values[0] && typeof values[0] === 'object') {
+              if (values[0].color) {
+                indicatorColor = values[0].color;
+                console.log("Found color in indicator data:", indicatorColor);
+              }
+            } else {
+              // Use default color scheme
+              indicatorColor = getIndicatorColor(name);
+              console.log("Using default color for", name, ":", indicatorColor);
+            }
+
             // Create a new line series for each indicator
-            const color = getIndicatorColor(name);
             const lineSeries = chartInstance.current.addLineSeries({
-              color,
-              lineWidth: 1.5,
+              color: indicatorColor,
+              lineWidth: 2, // Increased line width for better visibility
               title: name,
             });
 
             // Format indicator data
-            const lineData = values.map((value, index) => {
-              if (index >= data.length) return null;
-              
-              const time = timeToLocal(new Date(data[index][0]).getTime() / 1000);
-              return { time, value };
-            }).filter(item => item !== null);
+            const lineData = [];
+
+            for (let i = 0; i < values.length; i++) {
+              if (i >= data.length) continue;
+
+              const time = timeToLocal(new Date(data[i][0]).getTime() / 1000);
+              let dataValue;
+
+              if (typeof values[i] === 'object' && values[i] !== null) {
+                // For objects (like our new EMA format)
+                if ('value' in values[i]) {
+                  dataValue = values[i].value;
+                } else if ('timestamp' in values[i] && 'value' in values[i]) {
+                  dataValue = values[i].value;
+                }
+              } else {
+                // For direct values
+                dataValue = values[i];
+              }
+
+              if (dataValue !== null && dataValue !== undefined) {
+                lineData.push({ time, value: dataValue });
+              }
+            }
+
+            // Debug output
+            console.log(`Processed ${lineData.length} data points for ${name} with color ${indicatorColor}`);
 
             lineSeries.setData(lineData);
           });

@@ -1276,6 +1276,17 @@ def get_strategies():
             },
             "builtin": True
         },
+        "ema_crossover": {
+            "id": "ema_crossover",
+            "name": "EMA Crossover",
+            "type": "trend_following",
+            "description": "Generates signals when a short-term EMA crosses a long-term EMA, more responsive to recent price changes",
+            "parameters": {
+                "short_window": {"type": "integer", "default": 12, "min": 3, "max": 50},
+                "long_window": {"type": "integer", "default": 26, "min": 10, "max": 200}
+            },
+            "builtin": True
+        },
         "rsi_strategy": {
             "id": "rsi_strategy",
             "name": "RSI Strategy",
