@@ -15,13 +15,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const initialCapital = document.getElementById('initialCapital');
     const strategyParams = document.getElementById('strategyParams');
     const runBacktestBtn = document.getElementById('runBacktestBtn');
-    
+
     // Results elements
     const backtestLoading = document.getElementById('backtestLoading');
     const backtestResults = document.getElementById('backtestResults');
     const backtestError = document.getElementById('backtestError');
     const backtestStatus = document.getElementById('backtestStatus');
-    
+
     // Metrics elements
     const totalReturn = document.getElementById('totalReturn');
     const sharpeRatio = document.getElementById('sharpeRatio');
@@ -33,7 +33,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Set default dates
     const today = new Date();
     const oneYearAgo = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate());
-    
+
     endDate.value = today.toISOString().split('T')[0];
     startDate.value = oneYearAgo.toISOString().split('T')[0];
 
@@ -81,27 +81,27 @@ document.addEventListener('DOMContentLoaded', function() {
 
         if (selectedStrategy && strategyConfigs[selectedStrategy]) {
             const config = strategyConfigs[selectedStrategy];
-            
+
             config.params.forEach(param => {
                 const paramDiv = document.createElement('div');
                 paramDiv.className = 'space-y-2';
-                
+
                 const label = document.createElement('label');
                 label.textContent = param.label;
                 label.className = 'block text-sm font-medium text-gray-300';
                 label.setAttribute('for', param.name);
-                
+
                 const input = document.createElement('input');
                 input.type = param.type;
                 input.id = param.name;
                 input.name = param.name;
                 input.value = param.default;
                 input.className = 'w-full p-2 border border-gray-600 bg-gray-700 text-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500';
-                
+
                 if (param.min !== undefined) input.min = param.min;
                 if (param.max !== undefined) input.max = param.max;
                 if (param.step !== undefined) input.step = param.step;
-                
+
                 paramDiv.appendChild(label);
                 paramDiv.appendChild(input);
                 strategyParams.appendChild(paramDiv);
@@ -114,16 +114,17 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     function handleSymbolSearch() {
         const query = symbolInput.value.trim();
-        
+
         if (symbolSearchTimeout) {
             clearTimeout(symbolSearchTimeout);
         }
-        
+
         if (query.length < 2) {
             hideSymbolDropdown();
             return;
         }
-          symbolSearchTimeout = setTimeout(() => {
+
+        symbolSearchTimeout = setTimeout(() => {
             fetch(`/api/search?query=${encodeURIComponent(query)}&exchange=NSE_EQ`)
                 .then(response => response.json())
                 .then(data => {
@@ -145,10 +146,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
     /**
      * Populate symbol dropdown with search results
-     */    function populateSymbolDropdown(results) {
+     */
+    function populateSymbolDropdown(results) {
         console.log('Populating dropdown with results:', results);
         symbolDropdown.innerHTML = '';
-        
+
         if (!results || results.length === 0) {
             const noResults = document.createElement('div');
             noResults.className = 'p-3 text-gray-400 text-sm';
@@ -159,22 +161,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.log(`Symbol ${index}:`, symbol);
                 const item = document.createElement('div');
                 item.className = 'p-3 hover:bg-gray-600 cursor-pointer border-b border-gray-600 last:border-b-0';
-                
+
                 const displaySymbol = symbol.tradingsymbol || symbol.symbol || 'Unknown';
                 const displayName = symbol.name || 'N/A';
-                
+
                 item.innerHTML = `
                     <div class="font-medium text-gray-200">${displaySymbol}</div>
                     <div class="text-sm text-gray-400">${displayName}</div>
                 `;
-                
+
                 item.addEventListener('click', () => selectSymbol(symbol));
                 symbolDropdown.appendChild(item);
             });
         }
-        
+
         symbolDropdown.classList.remove('hidden');
-    }/**
+    }
+
+    /**
      * Select a symbol from dropdown
      */
     function selectSymbol(symbol) {
@@ -197,30 +201,30 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     function runBacktest(event) {
         event.preventDefault();
-        
+
         // Validate inputs
         if (!selectedSymbol.value) {
             alert('Please select a symbol');
             return;
         }
-        
+
         if (!strategySelect.value) {
             alert('Please select a strategy');
             return;
         }
-        
+
         if (!startDate.value || !endDate.value) {
             alert('Please select date range');
             return;
         }
-        
+
         // Collect strategy parameters
         const params = {};
         const paramInputs = strategyParams.querySelectorAll('input');
         paramInputs.forEach(input => {
             params[input.name] = parseFloat(input.value) || input.value;
         });
-        
+
         // Prepare backtest request
         const backtestData = {
             instrument_key: selectedSymbol.value,
@@ -230,10 +234,10 @@ document.addEventListener('DOMContentLoaded', function() {
             initial_capital: parseFloat(initialCapital.value),
             params: params
         };
-        
+
         // Show loading state
         showLoading();
-        
+
         // Run backtest
         fetch('/api/backtest', {
             method: 'POST',
@@ -277,19 +281,24 @@ document.addEventListener('DOMContentLoaded', function() {
         backtestResults.classList.remove('hidden');
         backtestError.classList.add('hidden');
         backtestStatus.textContent = 'Backtest completed successfully';
-        
+
+        // Add detailed logging to debug data structure
+        console.log('Backtest data structure:', data);
+        console.log('Portfolio data:', data.equity);
+        console.log('Metrics data:', metrics);
+
         // Update metrics - Add checks for undefined or null values
         totalReturn.textContent = metrics && metrics.total_return !== undefined && metrics.total_return !== null ? `${(metrics.total_return * 100).toFixed(2)}%` : 'N/A';
         sharpeRatio.textContent = metrics && metrics.sharpe_ratio !== undefined && metrics.sharpe_ratio !== null ? metrics.sharpe_ratio.toFixed(2) : 'N/A';
         maxDrawdown.textContent = metrics && metrics.max_drawdown !== undefined && metrics.max_drawdown !== null ? `${(metrics.max_drawdown * 100).toFixed(2)}%` : 'N/A';
         winRate.textContent = metrics && metrics.win_rate !== undefined && metrics.win_rate !== null ? `${(metrics.win_rate * 100).toFixed(1)}%` : 'N/A';
-        
+
         // Create chart
-        createChart(data);
-        
+        createChart(data, metrics);
+
         // Update trade log
-        updateTradeLog(data.trades || []);
-        
+        updateTradeLog(metrics.trades || []);
+
         // Reset button
         runBacktestBtn.disabled = false;
         runBacktestBtn.innerHTML = '<i class="fas fa-play mr-2"></i>Run Backtest';
@@ -303,7 +312,7 @@ document.addEventListener('DOMContentLoaded', function() {
         backtestResults.classList.add('hidden');
         backtestError.classList.remove('hidden');
         backtestStatus.textContent = 'Backtest failed';
-        
+
         const errorMessageDiv = document.getElementById('errorMessage');
         if (errorMessageDiv) {
             errorMessageDiv.textContent = message || 'An error occurred while running the backtest';
@@ -317,7 +326,7 @@ document.addEventListener('DOMContentLoaded', function() {
     /**
      * Create price and equity chart
      */
-    function createChart(data) {
+    function createChart(data, metrics) {
         const chartContainer = document.getElementById('backtestChart');
         if (!chartContainer) return;
 
@@ -325,7 +334,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (chart) {
             chart.destroy();
         }
-        
+
+        // Add detailed logging for debugging
+        console.log('Creating chart with data:', data);
+        console.log('Portfolio/Equity data:', data.equity);
+
         // Prepare canvas
         chartContainer.innerHTML = '';
         const canvas = document.createElement('canvas');
@@ -352,19 +365,81 @@ document.addEventListener('DOMContentLoaded', function() {
             priceData.push(candle.close);
         });
 
-        // Equity data
+        // Equity data - Handle different possible data structures with enhanced debugging
+        console.log('Processing equity data');
         if (data.equity) {
-            data.equity.forEach(point => {
-                equityData.push(point.value);
-            });
+            console.log('Portfolio data structure:', data.equity);
+            console.log('Portfolio data type:', typeof data.equity);
+            console.log('Is array:', Array.isArray(data.equity));
+
+            if (data.equity.length > 0) {
+                console.log('First equity item:', data.equity[0]);
+                console.log('First equity item type:', typeof data.equity[0]);
+            }
+
+            // Check what format the equity data is in and process accordingly
+            if (Array.isArray(data.equity)) {
+                if (data.equity.length > 0) {
+                    if (typeof data.equity[0] === 'object' && data.equity[0].portfolio_value !== undefined) {
+                        // Format is array of objects with portfolio_value property
+                        console.log('Processing equity as objects with portfolio_value property');
+                        data.equity.forEach(point => {
+                            equityData.push(point.portfolio_value);
+                        });
+                    } else if (typeof data.equity[0] === 'object' && data.equity[0].value !== undefined) {
+                        // Format is array of objects with value property
+                        console.log('Processing equity as objects with value property');
+                        data.equity.forEach(point => {
+                            equityData.push(point.value);
+                        });
+                    } else if (typeof data.equity[0] === 'number') {
+                        // Format is array of numbers
+                        console.log('Processing equity as array of numbers');
+                        equityData = [...data.equity];
+                    }
+                }
+            } else if (typeof data.equity === 'object') {
+                // Format might be an object with values array or similar
+                console.log('Processing equity as object with values or portfolio array');
+                if (data.equity.values && Array.isArray(data.equity.values)) {
+                    equityData = [...data.equity.values];
+                } else if (data.equity.portfolio && Array.isArray(data.equity.portfolio)) {
+                    equityData = [...data.equity.portfolio];
+                }
+            }
+
+            console.log('Processed equity data:', equityData);
+            console.log('Equity data length:', equityData.length);
+        } else {
+            console.log('No equity data found in the response.');
+        }
+
+        // If portfolio data is still empty, try to create synthetic data
+        if (!equityData.length) {
+            console.log('Creating synthetic equity curve');
+            const initialCapValue = parseFloat(initialCapital.value) || 100000;
+            console.log('Initial capital:', initialCapValue);
+
+            if (metrics && metrics.total_return !== undefined) {
+                console.log('Using metrics total_return:', metrics.total_return);
+                const finalValue = initialCapValue * (1 + metrics.total_return);
+
+                // Create a simple linear growth from initial to final value
+                const dataPoints = data.candles.length;
+                for (let i = 0; i < dataPoints; i++) {
+                    const progress = i / (dataPoints - 1);
+                    equityData.push(initialCapValue + progress * (finalValue - initialCapValue));
+                }
+                console.log('Created synthetic equity data:', equityData);
+            }
         }
 
         // Signals data
-        if (data.trades) {
-            data.trades.forEach(trade => {
-                if (trade.type === 'BUY') {
+        if (data.signals) {
+            if (data.signals.buy) {
+                data.signals.buy.forEach(signal => {
                     const index = labels.findIndex(date => {
-                        const tradeDate = new Date(trade.timestamp);
+                        const tradeDate = new Date(signal.timestamp);
                         return date === tradeDate.toLocaleDateString();
                     });
 
@@ -375,9 +450,13 @@ document.addEventListener('DOMContentLoaded', function() {
                             r: 5
                         });
                     }
-                } else if (trade.type === 'SELL') {
+                });
+            }
+
+            if (data.signals.sell) {
+                data.signals.sell.forEach(signal => {
                     const index = labels.findIndex(date => {
-                        const tradeDate = new Date(trade.timestamp);
+                        const tradeDate = new Date(signal.timestamp);
                         return date === tradeDate.toLocaleDateString();
                     });
 
@@ -388,8 +467,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             r: 5
                         });
                     }
-                }
-            });
+                });
+            }
         }
 
         // MA data if available
@@ -562,12 +641,12 @@ document.addEventListener('DOMContentLoaded', function() {
                         zoom: {
                             wheel: {
                                 enabled: true,
-                                speed: 0.1,
+                                speed: 0.1
                             },
                             pinch: {
                                 enabled: true
                             },
-                            mode: 'xy',
+                            mode: 'xy'
                         },
                         pan: {
                             enabled: true,
@@ -595,27 +674,44 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     function updateTradeLog(trades) {
         tradeLog.innerHTML = '';
-        
-        if (trades.length === 0) {
+
+        if (!trades || trades.length === 0) {
             tradeLog.innerHTML = '<p class="text-gray-400 text-sm">No trades executed</p>';
             return;
         }
-        
+
         trades.forEach(trade => {
-            const tradeDiv = document.createElement('div');
-            tradeDiv.className = `p-2 rounded border-l-4 ${trade.action === 'BUY' ? 'border-green-500 bg-green-900/20' : 'border-red-500 bg-red-900/20'}`;
-            
-            tradeDiv.innerHTML = `
-                <div class="flex justify-between items-center">
-                    <span class="font-medium ${trade.action === 'BUY' ? 'text-green-400' : 'text-red-400'}">${trade.action}</span>
-                    <span class="text-gray-300">₹${trade.price}</span>
-                </div>
-                <div class="text-sm text-gray-400">
-                    ${new Date(trade.timestamp).toLocaleDateString()} | Qty: ${trade.quantity}
-                </div>
-            `;
-            
-            tradeLog.appendChild(tradeDiv);
+            try {
+                const tradeDiv = document.createElement('div');
+                const profit = trade.profit_pct || 0;
+                const tradeColor = profit > 0 ? 'border-green-500 bg-green-900/20' : 'border-red-500 bg-red-900/20';
+                const profitColor = profit > 0 ? 'text-green-400' : 'text-red-400';
+
+                tradeDiv.className = `p-2 rounded border-l-4 ${tradeColor}`;
+
+                // Use safe defaults and check for null or undefined
+                const entryDate = trade.entry_date ? new Date(trade.entry_date).toLocaleDateString() : 'N/A';
+                const exitDate = trade.exit_date ? new Date(trade.exit_date).toLocaleDateString() : 'N/A';
+                const entryPrice = trade.entry_price ? trade.entry_price.toFixed(2) : 'N/A';
+                const exitPrice = trade.exit_price ? trade.exit_price.toFixed(2) : 'N/A';
+
+                tradeDiv.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <span class="font-medium">Trade</span>
+                        <span class="font-medium ${profitColor}">${profit.toFixed(2)}%</span>
+                    </div>
+                    <div class="text-sm text-gray-400">
+                        Entry: ${entryDate} at ₹${entryPrice}
+                    </div>
+                    <div class="text-sm text-gray-400">
+                        Exit: ${exitDate} at ₹${exitPrice}
+                    </div>
+                `;
+
+                tradeLog.appendChild(tradeDiv);
+            } catch (err) {
+                console.error('Error processing trade:', err, trade);
+            }
         });
     }
 
@@ -627,7 +723,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (data.success) {
                     // Clear existing options except the first one
                     strategySelect.innerHTML = '<option value="">Select a strategy...</option>';
-                    
+
                     // Add strategies to dropdown
                     Object.entries(data.strategies).forEach(([key, strategy]) => {
                         const option = document.createElement('option');

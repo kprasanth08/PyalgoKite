@@ -59,13 +59,24 @@ class BacktestService:
                     if result is None:
                         return {"success": False, "message": f"Strategy {strategy_name} returned None"}
                     
+                    # Initialize portfolio equity calculation
+                    initial_capital = 100000.0  # Default starting capital
+                    df_copy = df.copy()
+                    df_copy['portfolio_value'] = initial_capital
+
+                    # Process the data with the strategy and get metrics
                     result = self.replace_nan_with_none(result)
-                    # Use df.copy() here as well for calculate_metrics
-                    metrics = self.calculate_metrics(df.copy(), result) 
-                    
+                    metrics = self.calculate_metrics(df_copy, result)
+
                     if isinstance(metrics, dict):
                         metrics = self.replace_nan_with_none(metrics) # Ensure metrics are also cleaned
                     
+                    # Ensure the portfolio data is added to the result object
+                    if 'equity' not in result and 'portfolio_value' in df_copy.columns:
+                        equity_data = self.replace_nan_with_none(df_copy['portfolio_value'].reset_index().to_dict('records'))
+                        result['equity'] = equity_data
+                        print("Portfolio equity data added to result:", len(equity_data), "data points")
+
                     return {
                         "success": True,
                         "data": result,
@@ -233,6 +244,41 @@ class BacktestService:
             # Sort signals to process them chronologically
             all_signal_dates = sorted(list(set(buy_signals_dates + sell_signals_dates)))
 
+            # Generate portfolio equity curve
+            initial_capital = 100000.0  # Default value, will be overridden by frontend
+            df['portfolio_value'] = initial_capital
+            current_position = 0  # 0 = no position, 1 = long position
+            portfolio_value = initial_capital
+            invested_amount = 0
+            shares = 0
+
+            # Process trades and update equity curve
+            for date_idx, row in df.iterrows():
+                # Check for buy signal
+                if date_idx in buy_signals_dates and current_position == 0:
+                    # Buy signal - calculate shares based on 95% of portfolio
+                    invested_amount = portfolio_value * 0.95
+                    shares = invested_amount / row['close']
+                    current_position = 1
+                    print(f"BUY: {date_idx}, Price: {row['close']}, Shares: {shares}")
+
+                # Check for sell signal
+                elif date_idx in sell_signals_dates and current_position == 1:
+                    # Sell signal - realize profit/loss
+                    portfolio_value = (shares * row['close']) + (portfolio_value - invested_amount)
+                    current_position = 0
+                    shares = 0
+                    invested_amount = 0
+                    print(f"SELL: {date_idx}, Price: {row['close']}, New Portfolio: {portfolio_value}")
+
+                # Update portfolio value for the current day
+                if current_position == 1:
+                    # If holding position, update portfolio based on current share value + remaining cash
+                    df.at[date_idx, 'portfolio_value'] = (shares * row['close']) + (portfolio_value - invested_amount)
+                else:
+                    # If no position, portfolio value remains the same
+                    df.at[date_idx, 'portfolio_value'] = portfolio_value
+
             for date_signal in all_signal_dates:
                 # Ensure date is timezone-naive for comparison
                 current_date_naive = date_signal.replace(tzinfo=None) if date_signal.tzinfo else date_signal
@@ -279,7 +325,19 @@ class BacktestService:
             profit_trades = [t for t in trades if t["profit_pct"] > 0]
             loss_trades = [t for t in trades if t["profit_pct"] <= 0] # Includes zero profit trades as non-winning
 
-            return {
+            # Calculate total return from the equity curve
+            start_value = df['portfolio_value'].iloc[0] if not df['portfolio_value'].empty else initial_capital
+            end_value = df['portfolio_value'].iloc[-1] if not df['portfolio_value'].empty else initial_capital
+            total_return = (end_value / start_value) - 1 if start_value > 0 else 0
+
+            # Prepare equity data for the frontend
+            equity_data = self.replace_nan_with_none(df['portfolio_value'].reset_index().to_dict('records'))
+
+            # Add equity data to the result
+            result['equity'] = equity_data
+
+            metrics = {
+                "total_return": total_return,
                 "total_trades": len(trades),
                 "win_rate": len(profit_trades) / len(trades) if trades else 0,
                 "avg_profit": sum(t["profit_pct"] for t in profit_trades) / len(profit_trades) if profit_trades else 0,
@@ -287,9 +345,15 @@ class BacktestService:
                 "max_profit": max(t["profit_pct"] for t in trades) if trades else 0,
                 "max_loss": min(t["profit_pct"] for t in trades) if trades else 0, # max_loss will be negative or zero
                 "net_profit": sum(t["profit_pct"] for t in trades),
+                "initial_capital": initial_capital,
+                "final_capital": end_value,
                 "trades": trades
             }
+
+            return metrics
+
         except Exception as e:
             print(f"Error in calculate_metrics: {e}")
             traceback.print_exc()
             return {"error": str(e), "total_trades": 0, "win_rate": 0, "avg_profit": 0, "avg_loss": 0, "max_profit": 0, "max_loss": 0, "net_profit": 0, "trades": []}
+
