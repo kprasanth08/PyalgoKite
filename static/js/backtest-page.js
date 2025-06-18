@@ -1,147 +1,618 @@
-// backtest-page.js
-import React, { useState, useEffect } from 'react';
-import BacktestChart from './components/BacktestChart';
-import StrategySelector from './components/StrategySelector';
-import SymbolSearch from './components/SymbolSearch';
-import PerformanceMetrics from './components/PerformanceMetrics';
-import DateRangePicker from './components/DateRangePicker';
+/**
+ * Backtest page functionality for PyalgoKite platform
+ * Handles strategy backtesting configuration and execution
+ */
 
-function BacktestPage() {
-    const [selectedSymbol, setSelectedSymbol] = useState(null);
-    const [selectedStrategy, setSelectedStrategy] = useState(null);
-    const [strategies, setStrategies] = useState([]);
-    const [strategyParams, setStrategyParams] = useState({});
-    const [dateRange, setDateRange] = useState({
-        startDate: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000), // 1 year ago
-        endDate: new Date()
-    });
-    const [backtestResults, setBacktestResults] = useState(null);
-    const [isLoading, setIsLoading] = useState(false);
+document.addEventListener('DOMContentLoaded', function() {
+    // DOM elements
+    const backtestForm = document.getElementById('backtestForm');
+    const strategySelect = document.getElementById('strategySelect');
+    const symbolInput = document.getElementById('symbolInput');
+    const symbolDropdown = document.getElementById('symbolDropdown');
+    const selectedSymbol = document.getElementById('selectedSymbol');
+    const startDate = document.getElementById('startDate');
+    const endDate = document.getElementById('endDate');
+    const initialCapital = document.getElementById('initialCapital');
+    const strategyParams = document.getElementById('strategyParams');
+    const runBacktestBtn = document.getElementById('runBacktestBtn');
+    
+    // Results elements
+    const backtestLoading = document.getElementById('backtestLoading');
+    const backtestResults = document.getElementById('backtestResults');
+    const backtestError = document.getElementById('backtestError');
+    const backtestStatus = document.getElementById('backtestStatus');
+    
+    // Metrics elements
+    const totalReturn = document.getElementById('totalReturn');
+    const sharpeRatio = document.getElementById('sharpeRatio');
+    const maxDrawdown = document.getElementById('maxDrawdown');
+    const winRate = document.getElementById('winRate');
+    const tradeLog = document.getElementById('tradeLog');
+    const backtestChart = document.getElementById('backtestChart');
 
-    // Fetch available strategies on component mount
-    useEffect(() => {
-        fetch('/api/strategies')
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    setStrategies(data.strategies);
-                }
-            })
-            .catch(error => console.error('Error fetching strategies:', error));
-    }, []);
+    // Set default dates
+    const today = new Date();
+    const oneYearAgo = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate());
+    
+    endDate.value = today.toISOString().split('T')[0];
+    startDate.value = oneYearAgo.toISOString().split('T')[0];
 
-    // Update strategy parameters when strategy changes
-    useEffect(() => {
-        if (selectedStrategy && strategies[selectedStrategy]) {
-            const defaultParams = {};
-            const strategyConfig = strategies[selectedStrategy];
+    let chart = null;
+    let symbolSearchTimeout = null;
 
-            // Set default values for all parameters
-            Object.entries(strategyConfig.parameters).forEach(([paramName, paramConfig]) => {
-                defaultParams[paramName] = paramConfig.default;
-            });
-
-            setStrategyParams(defaultParams);
+    // Strategy parameter configurations
+    const strategyConfigs = {
+        'moving_average_crossover': {
+            name: 'Moving Average Crossover',
+            params: [
+                { name: 'short_window', label: 'Short MA Period', type: 'number', default: 20, min: 5, max: 50 },
+                { name: 'long_window', label: 'Long MA Period', type: 'number', default: 50, min: 20, max: 200 }
+            ]
+        },
+        'rsi_strategy': {
+            name: 'RSI Strategy',
+            params: [
+                { name: 'rsi_period', label: 'RSI Period', type: 'number', default: 14, min: 5, max: 30 },
+                { name: 'oversold_threshold', label: 'Oversold Threshold', type: 'number', default: 30, min: 20, max: 40 },
+                { name: 'overbought_threshold', label: 'Overbought Threshold', type: 'number', default: 70, min: 60, max: 80 }
+            ]
+        },
+        'bollinger_bands': {
+            name: 'Bollinger Bands',
+            params: [
+                { name: 'period', label: 'Period', type: 'number', default: 20, min: 10, max: 50 },
+                { name: 'std_dev', label: 'Standard Deviation', type: 'number', default: 2, min: 1, max: 3, step: 0.1 }
+            ]
         }
-    }, [selectedStrategy, strategies]);
+    };
 
-    const runBacktest = () => {
-        if (!selectedSymbol || !selectedStrategy) {
-            alert('Please select both a symbol and a strategy');
+    // Event listeners
+    strategySelect.addEventListener('change', updateStrategyParams);
+    symbolInput.addEventListener('input', handleSymbolSearch);
+    symbolInput.addEventListener('blur', hideSymbolDropdown);
+    backtestForm.addEventListener('submit', runBacktest);
+
+    /**
+     * Update strategy parameters based on selected strategy
+     */
+    function updateStrategyParams() {
+        const selectedStrategy = strategySelect.value;
+        strategyParams.innerHTML = '';
+
+        if (selectedStrategy && strategyConfigs[selectedStrategy]) {
+            const config = strategyConfigs[selectedStrategy];
+            
+            config.params.forEach(param => {
+                const paramDiv = document.createElement('div');
+                paramDiv.className = 'space-y-2';
+                
+                const label = document.createElement('label');
+                label.textContent = param.label;
+                label.className = 'block text-sm font-medium text-gray-300';
+                label.setAttribute('for', param.name);
+                
+                const input = document.createElement('input');
+                input.type = param.type;
+                input.id = param.name;
+                input.name = param.name;
+                input.value = param.default;
+                input.className = 'w-full p-2 border border-gray-600 bg-gray-700 text-gray-200 rounded-md focus:ring-blue-500 focus:border-blue-500';
+                
+                if (param.min !== undefined) input.min = param.min;
+                if (param.max !== undefined) input.max = param.max;
+                if (param.step !== undefined) input.step = param.step;
+                
+                paramDiv.appendChild(label);
+                paramDiv.appendChild(input);
+                strategyParams.appendChild(paramDiv);
+            });
+        }
+    }
+
+    /**
+     * Handle symbol search
+     */
+    function handleSymbolSearch() {
+        const query = symbolInput.value.trim();
+        
+        if (symbolSearchTimeout) {
+            clearTimeout(symbolSearchTimeout);
+        }
+        
+        if (query.length < 2) {
+            hideSymbolDropdown();
             return;
         }
+          symbolSearchTimeout = setTimeout(() => {
+            fetch(`/api/search?query=${encodeURIComponent(query)}&exchange=NSE_EQ`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Search API response:', data);
+                    if (data.success && data.results) {
+                        console.log('Search results:', data.results);
+                        populateSymbolDropdown(data.results);
+                    } else {
+                        console.error('Search failed or no results:', data);
+                        hideSymbolDropdown();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error searching symbols:', error);
+                    hideSymbolDropdown();
+                });
+        }, 300);
+    }
 
-        setIsLoading(true);
+    /**
+     * Populate symbol dropdown with search results
+     */    function populateSymbolDropdown(results) {
+        console.log('Populating dropdown with results:', results);
+        symbolDropdown.innerHTML = '';
+        
+        if (!results || results.length === 0) {
+            const noResults = document.createElement('div');
+            noResults.className = 'p-3 text-gray-400 text-sm';
+            noResults.textContent = 'No symbols found';
+            symbolDropdown.appendChild(noResults);
+        } else {
+            results.forEach((symbol, index) => {
+                console.log(`Symbol ${index}:`, symbol);
+                const item = document.createElement('div');
+                item.className = 'p-3 hover:bg-gray-600 cursor-pointer border-b border-gray-600 last:border-b-0';
+                
+                const displaySymbol = symbol.tradingsymbol || symbol.symbol || 'Unknown';
+                const displayName = symbol.name || 'N/A';
+                
+                item.innerHTML = `
+                    <div class="font-medium text-gray-200">${displaySymbol}</div>
+                    <div class="text-sm text-gray-400">${displayName}</div>
+                `;
+                
+                item.addEventListener('click', () => selectSymbol(symbol));
+                symbolDropdown.appendChild(item);
+            });
+        }
+        
+        symbolDropdown.classList.remove('hidden');
+    }/**
+     * Select a symbol from dropdown
+     */
+    function selectSymbol(symbol) {
+        symbolInput.value = symbol.tradingsymbol || symbol.symbol;
+        selectedSymbol.value = symbol.instrument_key;
+        hideSymbolDropdown();
+    }
 
-        const backtestParams = {
-            instrument_key: selectedSymbol.instrument_key,
-            strategy: selectedStrategy,
-            params: strategyParams,
-            start_date: dateRange.startDate.toISOString().split('T')[0],
-            end_date: dateRange.endDate.toISOString().split('T')[0]
+    /**
+     * Hide symbol dropdown
+     */
+    function hideSymbolDropdown() {
+        setTimeout(() => {
+            symbolDropdown.classList.add('hidden');
+        }, 200);
+    }
+
+    /**
+     * Run backtest
+     */
+    function runBacktest(event) {
+        event.preventDefault();
+        
+        // Validate inputs
+        if (!selectedSymbol.value) {
+            alert('Please select a symbol');
+            return;
+        }
+        
+        if (!strategySelect.value) {
+            alert('Please select a strategy');
+            return;
+        }
+        
+        if (!startDate.value || !endDate.value) {
+            alert('Please select date range');
+            return;
+        }
+        
+        // Collect strategy parameters
+        const params = {};
+        const paramInputs = strategyParams.querySelectorAll('input');
+        paramInputs.forEach(input => {
+            params[input.name] = parseFloat(input.value) || input.value;
+        });
+        
+        // Prepare backtest request
+        const backtestData = {
+            instrument_key: selectedSymbol.value,
+            strategy: strategySelect.value,
+            start_date: startDate.value,
+            end_date: endDate.value,
+            initial_capital: parseFloat(initialCapital.value),
+            params: params
         };
-
+        
+        // Show loading state
+        showLoading();
+        
+        // Run backtest
         fetch('/api/backtest', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(backtestParams)
+            body: JSON.stringify(backtestData)
         })
         .then(response => response.json())
         .then(data => {
-            setIsLoading(false);
             if (data.success) {
-                setBacktestResults(data);
+                displayResults(data.data, data.metrics);
             } else {
-                alert(`Backtest failed: ${data.message}`);
+                showError(data.message || 'Backtest failed');
             }
         })
         .catch(error => {
-            setIsLoading(false);
             console.error('Error running backtest:', error);
+            showError('Network error occurred');
         });
-    };
+    }
 
-    const handleParamChange = (paramName, value) => {
-        setStrategyParams(prev => ({
-            ...prev,
-            [paramName]: value
-        }));
-    };
+    /**
+     * Show loading state
+     */
+    function showLoading() {
+        backtestLoading.classList.remove('hidden');
+        backtestResults.classList.add('hidden');
+        backtestError.classList.add('hidden');
+        backtestStatus.textContent = 'Running backtest...';
+        runBacktestBtn.disabled = true;
+        runBacktestBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Running...';
+    }
 
-    return (
-        <div className="backtest-page">
-            <h1>Strategy Backtesting</h1>
+    /**
+     * Display backtest results
+     */
+    function displayResults(data, metrics) {
+        // Hide loading, show results
+        backtestLoading.classList.add('hidden');
+        backtestResults.classList.remove('hidden');
+        backtestError.classList.add('hidden');
+        backtestStatus.textContent = 'Backtest completed successfully';
+        
+        // Update metrics - Add checks for undefined or null values
+        totalReturn.textContent = metrics && metrics.total_return !== undefined && metrics.total_return !== null ? `${(metrics.total_return * 100).toFixed(2)}%` : 'N/A';
+        sharpeRatio.textContent = metrics && metrics.sharpe_ratio !== undefined && metrics.sharpe_ratio !== null ? metrics.sharpe_ratio.toFixed(2) : 'N/A';
+        maxDrawdown.textContent = metrics && metrics.max_drawdown !== undefined && metrics.max_drawdown !== null ? `${(metrics.max_drawdown * 100).toFixed(2)}%` : 'N/A';
+        winRate.textContent = metrics && metrics.win_rate !== undefined && metrics.win_rate !== null ? `${(metrics.win_rate * 100).toFixed(1)}%` : 'N/A';
+        
+        // Create chart
+        createChart(data);
+        
+        // Update trade log
+        updateTradeLog(data.trades || []);
+        
+        // Reset button
+        runBacktestBtn.disabled = false;
+        runBacktestBtn.innerHTML = '<i class="fas fa-play mr-2"></i>Run Backtest';
+    }
 
-            <div className="backtest-controls">
-                <div className="control-row">
-                    <SymbolSearch
-                        onSelect={setSelectedSymbol}
-                        selected={selectedSymbol}
-                    />
+    /**
+     * Show error state
+     */
+    function showError(message) {
+        backtestLoading.classList.add('hidden');
+        backtestResults.classList.add('hidden');
+        backtestError.classList.remove('hidden');
+        backtestStatus.textContent = 'Backtest failed';
+        
+        const errorMessageDiv = document.getElementById('errorMessage');
+        if (errorMessageDiv) {
+            errorMessageDiv.textContent = message || 'An error occurred while running the backtest';
+        }
 
-                    <StrategySelector
-                        strategies={strategies}
-                        selected={selectedStrategy}
-                        onSelect={setSelectedStrategy}
-                        params={strategyParams}
-                        onParamChange={handleParamChange}
-                    />
+        // Reset button
+        runBacktestBtn.disabled = false;
+        runBacktestBtn.innerHTML = '<i class="fas fa-play mr-2"></i>Run Backtest';
+    }
+
+    /**
+     * Create price and equity chart
+     */
+    function createChart(data) {
+        const chartContainer = document.getElementById('backtestChart');
+        if (!chartContainer) return;
+
+        // Clear any existing chart
+        if (chart) {
+            chart.destroy();
+        }
+        
+        // Prepare canvas
+        chartContainer.innerHTML = '';
+        const canvas = document.createElement('canvas');
+        canvas.id = 'priceChart';
+        canvas.width = chartContainer.clientWidth;
+        canvas.height = chartContainer.clientHeight;
+        chartContainer.appendChild(canvas);
+
+        // Create datasets
+        const priceData = [];
+        const equityData = [];
+        const buySignals = [];
+        const sellSignals = [];
+        const shortMaData = [];
+        const longMaData = [];
+
+        const labels = data.candles.map(candle => {
+            const date = new Date(candle.timestamp);
+            return date.toLocaleDateString();
+        });
+
+        // Price data
+        data.candles.forEach(candle => {
+            priceData.push(candle.close);
+        });
+
+        // Equity data
+        if (data.equity) {
+            data.equity.forEach(point => {
+                equityData.push(point.value);
+            });
+        }
+
+        // Signals data
+        if (data.trades) {
+            data.trades.forEach(trade => {
+                if (trade.type === 'BUY') {
+                    const index = labels.findIndex(date => {
+                        const tradeDate = new Date(trade.timestamp);
+                        return date === tradeDate.toLocaleDateString();
+                    });
+
+                    if (index !== -1) {
+                        buySignals.push({
+                            x: index,
+                            y: priceData[index],
+                            r: 5
+                        });
+                    }
+                } else if (trade.type === 'SELL') {
+                    const index = labels.findIndex(date => {
+                        const tradeDate = new Date(trade.timestamp);
+                        return date === tradeDate.toLocaleDateString();
+                    });
+
+                    if (index !== -1) {
+                        sellSignals.push({
+                            x: index,
+                            y: priceData[index],
+                            r: 5
+                        });
+                    }
+                }
+            });
+        }
+
+        // MA data if available
+        if (data.indicators) {
+            if (data.indicators.short_ma) {
+                data.indicators.short_ma.forEach(point => {
+                    shortMaData.push(point.value);
+                });
+            }
+
+            if (data.indicators.long_ma) {
+                data.indicators.long_ma.forEach(point => {
+                    longMaData.push(point.value);
+                });
+            }
+        }
+
+        // Create datasets array
+        const datasets = [
+            {
+                label: symbolInput.value + ' Price',
+                data: priceData,
+                borderColor: '#60a5fa',
+                backgroundColor: 'rgba(96, 165, 250, 0.1)',
+                borderWidth: 2,
+                fill: false,
+                tension: 0.1,
+                yAxisID: 'y'
+            },
+            {
+                label: 'Portfolio Value',
+                data: equityData,
+                borderColor: '#10b981',
+                borderWidth: 2,
+                fill: false,
+                tension: 0.1,
+                yAxisID: 'y1'
+            }
+        ];
+
+        // Add indicator datasets if available
+        if (shortMaData.length > 0) {
+            datasets.push({
+                label: 'Short MA',
+                data: shortMaData,
+                borderColor: '#f59e0b',
+                borderWidth: 2,
+                fill: false,
+                tension: 0.1,
+                yAxisID: 'y',
+                pointRadius: 0
+            });
+        }
+
+        if (longMaData.length > 0) {
+            datasets.push({
+                label: 'Long MA',
+                data: longMaData,
+                borderColor: '#ef4444',
+                borderWidth: 2,
+                fill: false,
+                tension: 0.1,
+                yAxisID: 'y',
+                pointRadius: 0
+            });
+        }
+
+        // Add buy/sell signals
+        if (buySignals.length > 0) {
+            datasets.push({
+                label: 'Buy Signals',
+                data: buySignals,
+                backgroundColor: 'rgba(16, 185, 129, 0.8)',
+                borderColor: 'rgba(16, 185, 129, 1)',
+                borderWidth: 1,
+                pointStyle: 'triangle',
+                pointRadius: 8,
+                pointRotation: 0,
+                type: 'bubble',
+                yAxisID: 'y'
+            });
+        }
+
+        if (sellSignals.length > 0) {
+            datasets.push({
+                label: 'Sell Signals',
+                data: sellSignals,
+                backgroundColor: 'rgba(239, 68, 68, 0.8)',
+                borderColor: 'rgba(239, 68, 68, 1)',
+                borderWidth: 1,
+                pointStyle: 'triangle',
+                pointRadius: 8,
+                pointRotation: 180,
+                type: 'bubble',
+                yAxisID: 'y'
+            });
+        }
+
+        // Create the chart
+        chart = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: datasets
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: 'rgba(255, 255, 255, 0.7)',
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
+                    },
+                    y: {
+                        position: 'left',
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: 'rgba(255, 255, 255, 0.7)'
+                        },
+                        title: {
+                            display: true,
+                            text: 'Price',
+                            color: 'rgba(255, 255, 255, 0.7)'
+                        }
+                    },
+                    y1: {
+                        position: 'right',
+                        grid: {
+                            drawOnChartArea: false
+                        },
+                        ticks: {
+                            color: 'rgba(255, 255, 255, 0.7)'
+                        },
+                        title: {
+                            display: true,
+                            text: 'Portfolio Value',
+                            color: 'rgba(255, 255, 255, 0.7)'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            color: 'rgba(255, 255, 255, 0.7)'
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                }
+            }
+        });
+    }
+
+    /**
+     * Update trade log
+     */
+    function updateTradeLog(trades) {
+        tradeLog.innerHTML = '';
+        
+        if (trades.length === 0) {
+            tradeLog.innerHTML = '<p class="text-gray-400 text-sm">No trades executed</p>';
+            return;
+        }
+        
+        trades.forEach(trade => {
+            const tradeDiv = document.createElement('div');
+            tradeDiv.className = `p-2 rounded border-l-4 ${trade.action === 'BUY' ? 'border-green-500 bg-green-900/20' : 'border-red-500 bg-red-900/20'}`;
+            
+            tradeDiv.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <span class="font-medium ${trade.action === 'BUY' ? 'text-green-400' : 'text-red-400'}">${trade.action}</span>
+                    <span class="text-gray-300">₹${trade.price}</span>
                 </div>
-
-                <div className="control-row">
-                    <DateRangePicker
-                        startDate={dateRange.startDate}
-                        endDate={dateRange.endDate}
-                        onChange={setDateRange}
-                    />
-
-                    <button
-                        onClick={runBacktest}
-                        disabled={!selectedSymbol || !selectedStrategy || isLoading}
-                        className="run-backtest-btn"
-                    >
-                        {isLoading ? 'Running...' : 'Run Backtest'}
-                    </button>
+                <div class="text-sm text-gray-400">
+                    ${new Date(trade.timestamp).toLocaleDateString()} | Qty: ${trade.quantity}
                 </div>
-            </div>
+            `;
+            
+            tradeLog.appendChild(tradeDiv);
+        });
+    }
 
-            {backtestResults && (
-                <>
-                    <BacktestChart
-                        data={backtestResults.data.candles}
-                        indicators={backtestResults.data.indicators}
-                        signals={backtestResults.data.signals}
-                        strategyName={strategies[selectedStrategy]?.name || selectedStrategy}
-                        symbolName={selectedSymbol?.tradingsymbol || ''}
-                    />
+    // Load strategies from API
+    function loadStrategies() {
+        fetch('/api/strategies')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Clear existing options except the first one
+                    strategySelect.innerHTML = '<option value="">Select a strategy...</option>';
+                    
+                    // Add strategies to dropdown
+                    Object.entries(data.strategies).forEach(([key, strategy]) => {
+                        const option = document.createElement('option');
+                        option.value = key;
+                        option.textContent = strategy.name;
+                        strategySelect.appendChild(option);
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error loading strategies:', error);
+            });
+    }
 
-                    <PerformanceMetrics metrics={backtestResults.metrics} />
-                </>
-            )}
-        </div>
-    );
-}
+    // Load strategies on page load
+    loadStrategies();
 
-export default BacktestPage;
+    // Initialize strategy parameters on page load
+    updateStrategyParams();
+});

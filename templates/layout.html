@@ -19,9 +19,10 @@
                             <span class="font-semibold text-gray-100 text-lg">PyAlgo</span>
                         </a>
                     </div>
-                    {% if session.get('kite_access_token') %}
-                    <div class="hidden md:flex items-center space-x-1">
+                    {% if session.get('kite_access_token') %}                    <div class="hidden md:flex items-center space-x-1">
                         <a href="/dashboard" class="py-2 px-3 rounded-md text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Dashboard</a>
+                        <a href="/strategies" class="py-2 px-3 rounded-md text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Strategies</a>
+                        <a href="/backtest" class="py-2 px-3 rounded-md text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Backtest</a>
                         <a href="/profile" class="py-2 px-3 rounded-md text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Profile</a>
                     </div>
                     {% endif %}
@@ -53,9 +54,10 @@
         </div>
         <!-- Mobile menu -->
         <div class="hidden mobile-menu">
-            <ul class="">
-                {% if session.get('kite_access_token') %}
+            <ul class="">                {% if session.get('kite_access_token') %}
                 <li><a href="/dashboard" class="block text-sm px-2 py-4 text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Dashboard</a></li>
+                <li><a href="/strategies" class="block text-sm px-2 py-4 text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Strategies</a></li>
+                <li><a href="/backtest" class="block text-sm px-2 py-4 text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Backtest</a></li>
                 <li><a href="/profile" class="block text-sm px-2 py-4 text-gray-300 hover:bg-gray-700 hover:text-white transition duration-300">Profile</a></li>
                 <li><a href="/logout" class="block text-sm px-2 py-4 text-red-400 hover:bg-red-700 hover:text-white transition duration-300">Logout</a></li>
                 {% else %}

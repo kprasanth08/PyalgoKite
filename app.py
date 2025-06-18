@@ -527,6 +527,18 @@ def user_profile():
     resp.headers['Expires'] = '0'
     return resp
 
+@app.route('/strategies')
+@require_login
+def strategies():
+    """Strategies management page"""
+    return render_template('strategies.html')
+
+@app.route('/backtest')
+@require_login
+def backtest():
+    """Backtest page"""
+    return render_template('backtest.html')
+
 @app.route('/logout')
 def logout():
     session.clear()
@@ -1224,44 +1236,77 @@ backtest_service = BacktestService()
 @app.route('/api/backtest', methods=['POST'])
 def run_backtest():
     """Run a backtest with specified parameters"""
-    data = request.json
-    instrument_key = data.get('instrument_key')
-    strategy_name = data.get('strategy')
-    params = data.get('params', {})
-    start_date = data.get('start_date')
-    end_date = data.get('end_date')
+    try:
+        data = request.json
+        instrument_key = data.get('instrument_key')
+        strategy_name = data.get('strategy')
+        params = data.get('params', {})
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
 
-    result = backtest_service.run_backtest(
-        instrument_key, strategy_name, params, start_date, end_date
-    )
+        # Validate required parameters
+        if not instrument_key:
+            return jsonify({"success": False, "message": "Instrument key is required"})
+        if not strategy_name:
+            return jsonify({"success": False, "message": "Strategy name is required"})
 
-    return jsonify(result)
+        result = backtest_service.run_backtest(
+            instrument_key, strategy_name, params, start_date, end_date
+        )
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in backtest endpoint: {e}")
+        return jsonify({"success": False, "message": f"Backtest failed: {str(e)}"})
 
 
 @app.route('/api/strategies', methods=['GET'])
 def get_strategies():
     """Get available strategies with default parameters"""
-    strategies = {
+    # Built-in strategies for backtesting
+    builtin_strategies = {
         "moving_average_crossover": {
+            "id": "moving_average_crossover",
             "name": "Moving Average Crossover",
+            "type": "trend_following",
             "description": "Generates signals when a short-term MA crosses a long-term MA",
             "parameters": {
                 "short_window": {"type": "integer", "default": 20, "min": 5, "max": 50},
                 "long_window": {"type": "integer", "default": 50, "min": 20, "max": 200}
-            }
+            },
+            "builtin": True
         },
         "rsi_strategy": {
+            "id": "rsi_strategy",
             "name": "RSI Strategy",
+            "type": "mean_reversion",
             "description": "Generates signals based on RSI oversold/overbought conditions",
             "parameters": {
                 "rsi_period": {"type": "integer", "default": 14, "min": 7, "max": 30},
                 "oversold": {"type": "integer", "default": 30, "min": 10, "max": 40},
                 "overbought": {"type": "integer", "default": 70, "min": 60, "max": 90}
-            }
+            },
+            "builtin": True
+        },
+        "bollinger_bands": {
+            "id": "bollinger_bands",
+            "name": "Bollinger Bands",
+            "type": "mean_reversion", 
+            "description": "Generates signals based on Bollinger Bands squeeze and expansion",
+            "parameters": {
+                "period": {"type": "integer", "default": 20, "min": 10, "max": 50},
+                "std_dev": {"type": "float", "default": 2.0, "min": 1.0, "max": 3.0}
+            },
+            "builtin": True
         }
     }
 
-    return jsonify({"success": True, "strategies": strategies})
+    # Combine built-in and user strategies
+    all_strategies = dict(builtin_strategies)
+    for strategy_id, strategy in user_strategies.items():
+        all_strategies[strategy_id] = strategy
+
+    return jsonify({"success": True, "strategies": all_strategies})
 
 
 @app.route('/api/search', methods=['GET'])
@@ -1279,7 +1324,67 @@ def search():
     return jsonify({"success": True, "results": results})
 
 
+# In-memory storage for user strategies (in production, use a database)
+user_strategies = {}
+
+@app.route('/api/strategies', methods=['POST'])
+def create_strategy():
+    """Create a new trading strategy"""
+    data = request.json
+    strategy_id = f"user_{len(user_strategies) + 1}_{int(datetime.now().timestamp())}"
+    
+    strategy = {
+        "id": strategy_id,
+        "name": data.get('name'),
+        "type": data.get('type'),
+        "description": data.get('description'),
+        "timeframes": data.get('timeframes', []),
+        "risk_level": data.get('risk_level'),
+        "indicators": data.get('indicators', []),
+        "code": data.get('code'),
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat()
+    }
+    
+    user_strategies[strategy_id] = strategy
+    return jsonify({"success": True, "strategy": strategy})
+
+@app.route('/api/strategies/<strategy_id>', methods=['PUT'])
+def update_strategy(strategy_id):
+    """Update an existing strategy"""
+    if strategy_id not in user_strategies:
+        return jsonify({"success": False, "message": "Strategy not found"}), 404
+    
+    data = request.json
+    strategy = user_strategies[strategy_id]
+    
+    # Update fields
+    strategy.update({
+        "name": data.get('name', strategy['name']),
+        "type": data.get('type', strategy['type']),
+        "description": data.get('description', strategy['description']),
+        "timeframes": data.get('timeframes', strategy['timeframes']),
+        "risk_level": data.get('risk_level', strategy['risk_level']),
+        "indicators": data.get('indicators', strategy['indicators']),
+        "code": data.get('code', strategy['code']),
+        "updated_at": datetime.now().isoformat()
+    })
+    
+    return jsonify({"success": True, "strategy": strategy})
+
+@app.route('/api/strategies/<strategy_id>', methods=['DELETE'])
+def delete_strategy(strategy_id):
+    """Delete a strategy"""
+    if strategy_id not in user_strategies:
+        return jsonify({"success": False, "message": "Strategy not found"}), 404
+    
+    del user_strategies[strategy_id]
+    return jsonify({"success": True, "message": "Strategy deleted"})
+
+@app.route('/api/strategies/user', methods=['GET'])
+def get_user_strategies():
+    """Get all user-created strategies"""
+    return jsonify({"success": True, "strategies": list(user_strategies.values())})
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
-if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0')
+    socketio.run(app, debug=True, host='0.0.0.0', port=6010)
